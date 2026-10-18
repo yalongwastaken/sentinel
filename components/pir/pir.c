@@ -11,7 +11,8 @@
 
 static const char *TAG = "PIR";
 
-esp_err_t pir_init(pir_sensor_t *pir, gpio_num_t pin, uint32_t debounce_time) {
+esp_err_t pir_init(pir_sensor_t *pir, gpio_num_t pin, uint32_t debounce_time)
+{
     // logging
     esp_err_t ret;
 
@@ -22,13 +23,11 @@ esp_err_t pir_init(pir_sensor_t *pir, gpio_num_t pin, uint32_t debounce_time) {
     }
 
     // configure gpio
-    gpio_config_t pir_config = {
-        .pin_bit_mask = (1ULL << pin),
-        .mode = GPIO_MODE_INPUT,
-        .intr_type = GPIO_INTR_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE
-    };
+    gpio_config_t pir_config = {.pin_bit_mask = (1ULL << pin),
+                                .mode = GPIO_MODE_INPUT,
+                                .intr_type = GPIO_INTR_DISABLE,
+                                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                                .pull_up_en = GPIO_PULLUP_DISABLE};
     ret = gpio_config(&pir_config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to config pir gpio");
@@ -46,7 +45,8 @@ esp_err_t pir_init(pir_sensor_t *pir, gpio_num_t pin, uint32_t debounce_time) {
     return ESP_OK;
 }
 
-bool pir_read(pir_sensor_t *pir) {
+bool pir_read(pir_sensor_t *pir)
+{
     if (pir == NULL) {
         ESP_LOGE(TAG, "pir pointer is NULL");
         return false;
@@ -60,7 +60,7 @@ bool pir_read(pir_sensor_t *pir) {
     if (current_state && !pir->last_state) {
         // debounce timing
         int64_t time_diff_ms = (current_time - pir->last_trigger_time) / 1000;
-        
+
         if (time_diff_ms >= pir->debounce_ms) {
             pir->motion_count++;
             pir->last_trigger_time = current_time;
@@ -74,7 +74,8 @@ bool pir_read(pir_sensor_t *pir) {
     return current_state;
 }
 
-uint32_t pir_get_motion_count(const pir_sensor_t *pir) {
+uint32_t pir_get_motion_count(const pir_sensor_t *pir)
+{
     if (pir == NULL) {
         ESP_LOGE(TAG, "pir pointer is NULL");
         return 0;
@@ -82,7 +83,8 @@ uint32_t pir_get_motion_count(const pir_sensor_t *pir) {
     return pir->motion_count;
 }
 
-void pir_reset_motion_count(pir_sensor_t *pir) {
+void pir_reset_motion_count(pir_sensor_t *pir)
+{
     if (pir != NULL) {
         pir->motion_count = 0;
         ESP_LOGI(TAG, "Motion count reset");

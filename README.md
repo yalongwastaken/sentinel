@@ -1,16 +1,18 @@
 # Sentinel
 
-A multi-node wireless sensor network on ESP32. A main hub aggregates motion, distance,
-and environmental readings from its own sensors and from a battery-powered remote node
-over BLE, and surfaces them on a local display.
+A multi-node wireless sensor network on ESP32. A main hub aggregates motion,
+distance, and environmental readings from its own sensors and from a
+battery-powered remote node over BLE, and surfaces them on a local display.
 
-The goal is a real distributed embedded system rather than a single-board demo: two
-independent firmware images, sensor drivers written from datasheets, FreeRTOS task
-scheduling with mutex-protected shared state, and a BLE GATT link between nodes.
+The goal is a real distributed embedded system rather than a single-board demo:
+two independent firmware images, sensor drivers written from datasheets,
+FreeRTOS task scheduling with mutex-protected shared state, and a BLE GATT link
+between nodes.
 
 ## Architecture
 
 ### Main Hub — ESP32 #1
+
 Central monitoring node.
 
 - **PIR motion sensor** — edge detection with debouncing
@@ -20,6 +22,7 @@ Central monitoring node.
 - **BLE client** — receives readings from the remote node
 
 ### Remote Node — ESP32 #2
+
 Battery-powered satellite sensor.
 
 - **PIR motion sensor** — remote motion detection
@@ -52,13 +55,14 @@ sentinel/
 └── README.md
 ```
 
-Each node builds as an independent ESP-IDF project. Drivers used by both nodes live in
-the root `components/`, pulled in through each project's `EXTRA_COMPONENT_DIRS`; drivers
-used by one node stay under that node.
+Each node builds as an independent ESP-IDF project. Drivers used by both nodes
+live in the root `components/`, pulled in through each project's
+`EXTRA_COMPONENT_DIRS`; drivers used by one node stay under that node.
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — task model, scheduling, concurrency, and bus details.
+- [docs/architecture.md](docs/architecture.md) — task model, scheduling,
+  concurrency, and bus details.
 
 ## Requirements
 
@@ -70,19 +74,21 @@ LCD1602 with PCF8574 I²C backpack · breadboard and jumpers · 5V/3.3V supply
 ## Pin Configuration
 
 ### Main Hub
-| Component        | Direction | GPIO |
-|------------------|-----------|------|
-| PIR sensor       | IN        | 13   |
-| Ultrasonic TRIG  | OUT       | 12   |
-| Ultrasonic ECHO  | IN        | 14   |
-| DHT11 data       | I/O       | 15   |
-| I²C SDA          | I/O       | 21   |
-| I²C SCL          | I/O       | 22   |
-| Status LED       | OUT       | 2    |
+
+| Component       | Direction | GPIO |
+| --------------- | --------- | ---- |
+| PIR sensor      | IN        | 13   |
+| Ultrasonic TRIG | OUT       | 12   |
+| Ultrasonic ECHO | IN        | 14   |
+| DHT11 data      | I/O       | 15   |
+| I²C SDA         | I/O       | 21   |
+| I²C SCL         | I/O       | 22   |
+| Status LED      | OUT       | 2    |
 
 ### Remote Node
+
 | Component  | Direction | GPIO |
-|------------|-----------|------|
+| ---------- | --------- | ---- |
 | PIR sensor | IN        | 13   |
 
 ## Build and Flash
@@ -102,5 +108,6 @@ idf.py -p /dev/ttyUSB1 flash monitor
 ## Author
 
 **Anthony Yalong**
+
 - Email: yalong.anthony123@gmail.com
 - GitHub: [@yalongwastaken](https://github.com/yalongwastaken)

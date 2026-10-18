@@ -12,10 +12,11 @@
 
 static const char *TAG = "HCSR04";
 
-esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trig_pin, gpio_num_t echo_pin, uint32_t timeout) {
+esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trig_pin, gpio_num_t echo_pin, uint32_t timeout)
+{
     // error management
     esp_err_t ret;
-    
+
     // sanity check
     if (sensor == NULL) {
         ESP_LOGE(TAG, "hcsr04 sensor pointer is null");
@@ -61,7 +62,8 @@ esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trig_pin, gpio_num_t e
     return ESP_OK;
 }
 
-esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor) {
+esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor)
+{
     // sanity check
     if (sensor == NULL) {
         ESP_LOGE(TAG, "hcsr04 sensor pointer is null");
@@ -74,7 +76,7 @@ esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor) {
     gpio_set_level(sensor->trig_pin, 1);
     esp_rom_delay_us(10);
     gpio_set_level(sensor->trig_pin, 0);
-    
+
     // wait for ECHO to go HIGH (with timeout)
     int64_t start_time = esp_timer_get_time();
     while (gpio_get_level(sensor->echo_pin) == 0) {
@@ -83,10 +85,10 @@ esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor) {
             return ESP_ERR_TIMEOUT;
         }
     }
-    
+
     // record when ECHO went HIGH
     int64_t echo_start = esp_timer_get_time();
-    
+
     // wait for ECHO to go LOW (with timeout)
     while (gpio_get_level(sensor->echo_pin) == 1) {
         if ((esp_timer_get_time() - echo_start) > sensor->timeout_us) {
@@ -94,23 +96,24 @@ esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor) {
             return ESP_ERR_TIMEOUT;
         }
     }
-    
+
     // record when ECHO went LOW
     int64_t echo_end = esp_timer_get_time();
-    
+
     // calculate pulse width
     int64_t pulse_width = echo_end - echo_start;
-    
+
     // calculate distance: speed of sound = 343 m/s = 0.0343 cm/μs
     // distance = (pulse_width * 0.0343) / 2
     sensor->last_distance_cm = (pulse_width * 0.034) / 2.0;
     ESP_LOGD(TAG, "distance: %.2f cm (pulse: %lld us)", sensor->last_distance_cm, pulse_width);
-    
+
     ESP_LOGI(TAG, "successfully read distance of hcsr04 sensor: %0.02f", sensor->last_distance_cm);
     return ESP_OK;
 }
 
-float hcsr04_get_last_distance(const hcsr04_sensor_t *sensor) {
+float hcsr04_get_last_distance(const hcsr04_sensor_t *sensor)
+{
     // sanity check
     if (sensor == NULL) {
         ESP_LOGW(TAG, "hcsr04 pointer is null");
