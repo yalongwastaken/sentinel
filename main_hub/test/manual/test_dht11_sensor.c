@@ -1,8 +1,8 @@
 /**
  * @file test_dht11_sensor.c
  * @author Anthony Yalong
- * @brief DHT11 temperature and humidity sensor test application - validates 
- *        sensor initialization, data reading, checksum verification, and 
+ * @brief DHT11 temperature and humidity sensor test application - validates
+ *        sensor initialization, data reading, checksum verification, and
  *        environmental measurements. Replace main/main.c with this file.
  */
 
@@ -14,9 +14,9 @@
 #include "esp_log.h"
 
 // test configuration
-#define TASK_DELAY 3000      // 3s task delay
-#define TASK_STACK_DEPTH 4096    // safe stack depth for testing
-#define TASK_PRIORITY 5     // safe task priority for testing
+#define TASK_DELAY 3000       // 3s task delay
+#define TASK_STACK_DEPTH 4096 // safe stack depth for testing
+#define TASK_PRIORITY 5       // safe task priority for testing
 
 // logging
 static const char *TAG = "test_dht11_sensor";
@@ -28,7 +28,8 @@ static TickType_t dht11_sensor_task_last_wake;
 // function prototypes
 void test_dht11_sensor(void *pvParameters);
 
-void app_main(void) {
+void app_main(void)
+{
     // error management
     esp_err_t ret;
 
@@ -40,17 +41,11 @@ void app_main(void) {
     }
 
     // create task
-    xTaskCreate(
-        test_dht11_sensor,
-        "test_dht11_sensor",
-        TASK_STACK_DEPTH,
-        NULL,
-        TASK_PRIORITY,
-        NULL
-    );
+    xTaskCreate(test_dht11_sensor, "test_dht11_sensor", TASK_STACK_DEPTH, NULL, TASK_PRIORITY, NULL);
 }
 
-void test_dht11_sensor(void *pvParameters) {
+void test_dht11_sensor(void *pvParameters)
+{
     // error management
     esp_err_t ret;
 
