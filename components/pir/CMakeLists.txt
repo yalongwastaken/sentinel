@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "pir.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver esp_timer
+    REQUIRES esp_driver_gpio esp_timer
 )
