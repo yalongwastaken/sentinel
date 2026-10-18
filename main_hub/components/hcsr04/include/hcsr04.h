@@ -16,36 +16,36 @@
  * @brief HC-SR04 ultrasonic sensor structure
  */
 typedef struct {
-    gpio_num_t trig_pin;    // GPIO pin for trigger signal
-    gpio_num_t echo_pin;    // GPIO pin for echo signal
-    float last_distance_cm; // Last measured distance in cm
-    uint32_t timeout_us;    // Echo timeout in microseconds
+    gpio_num_t trigger_gpio_pin;
+    gpio_num_t echo_gpio_pin;
+    float last_distance_cm;
+    uint32_t echo_timeout_us;
 } hcsr04_sensor_t;
 
 /**
  * @brief Initialize HC-SR04 ultrasonic sensor
  *
  * Configures trigger pin as output and echo pin as input.
- * Sets default timeout to 30ms (max range ~400cm).
  *
  * @param sensor Pointer to sensor structure
- * @param trig_pin GPIO pin number for trigger
- * @param echo_pin GPIO pin number for echo
- * @param timeout Timeout in microseconds to wait for echo pulse before aborting measurement
+ * @param trigger_gpio_pin GPIO pin wired to TRIG
+ * @param echo_gpio_pin GPIO pin wired to ECHO
+ * @param echo_timeout_us How long to wait for each echo edge before aborting a measurement
  * @return esp_err_t ESP_OK on success, error code otherwise
  */
-esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trig_pin, gpio_num_t echo_pin, uint32_t timeout);
+esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trigger_gpio_pin, gpio_num_t echo_gpio_pin,
+                      uint32_t echo_timeout_us);
 
 /**
- * @brief Read distance from ultrasonic sensor
+ * @brief Measure distance with the ultrasonic sensor
  *
- * Sends trigger pulse and measures echo response time.
- * Stores result in last_distance_cm.
+ * Sends a trigger pulse, times the echo, and stores the result in
+ * last_distance_cm.
  *
  * @param sensor Pointer to sensor structure
  * @return esp_err_t ESP_OK on success, ESP_ERR_TIMEOUT if no echo
  */
-esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor);
+esp_err_t hcsr04_measure_distance(hcsr04_sensor_t *sensor);
 
 /**
  * @brief Get last measured distance
@@ -53,6 +53,6 @@ esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor);
  * @param sensor Pointer to sensor structure
  * @return float Last distance in cm, or 0.0 if never measured
  */
-float hcsr04_get_last_distance(const hcsr04_sensor_t *sensor);
+float hcsr04_get_last_distance_cm(const hcsr04_sensor_t *sensor);
 
 #endif // HCSR04_H

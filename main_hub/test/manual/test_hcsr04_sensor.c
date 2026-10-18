@@ -54,7 +54,7 @@ void app_main(void)
     }
 
     // initialize hcsr04
-    ret = hcsr04_init(&hcsr04_sensor, HCSR04_PIN_TRIG, HCSR04_PIN_ECHO, HCSR04_TIMEOUT_US);
+    ret = hcsr04_init(&hcsr04_sensor, HCSR04_TRIGGER_GPIO_PIN, HCSR04_ECHO_GPIO_PIN, HCSR04_ECHO_TIMEOUT_US);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize hcsr04");
         return;
@@ -137,7 +137,7 @@ void test_hcsr04_sensor(void *pvParameters)
 
     while (1) {
         // read sensor
-        ret = hcsr04_read_distance(&hcsr04_sensor);
+        ret = hcsr04_measure_distance(&hcsr04_sensor);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "failed to read hcsr04 sensor distance");
             vTaskDelayUntil(&hcsr04_sensor_task_last_wake, pdMS_TO_TICKS(TASK_DELAY));
@@ -145,7 +145,7 @@ void test_hcsr04_sensor(void *pvParameters)
         }
 
         // get distance
-        float distance_cm = hcsr04_get_last_distance(&hcsr04_sensor);
+        float distance_cm = hcsr04_get_last_distance_cm(&hcsr04_sensor);
 
         // update LED
         led_update(distance_cm);
