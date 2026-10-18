@@ -8,7 +8,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_err.h"
 
 // lcd commands
@@ -40,8 +40,7 @@
  * @brief LCD handle structure
  */
 typedef struct {
-    i2c_port_t i2c_port;
-    uint8_t addr;
+    i2c_master_dev_handle_t device;
     uint8_t cols;
     uint8_t rows;
     uint8_t backlight_state;
@@ -50,15 +49,19 @@ typedef struct {
 /**
  * @brief Initialize LCD display
  * 
+ * Adds the LCD to the given I2C master bus as a device, then runs the
+ * HD44780 4-bit initialization sequence.
+ *
  * @param lcd Pointer to LCD handle
- * @param i2c_port I2C port number (I2C_NUM_0 or I2C_NUM_1)
+ * @param bus I2C master bus the LCD's PCF8574 backpack is wired to
  * @param addr I2C address of LCD (typically 0x27 or 0x3F)
+ * @param scl_speed_hz I2C clock for this device
  * @param cols Number of columns (typically 16)
  * @param rows Number of rows (typically 2)
  * @return esp_err_t ESP_OK on success
  */
-esp_err_t lcd_init(lcd_handle_t *lcd, i2c_port_t i2c_port, uint8_t addr,
-                   uint8_t cols, uint8_t rows);
+esp_err_t lcd_init(lcd_handle_t *lcd, i2c_master_bus_handle_t bus, uint8_t addr,
+                   uint32_t scl_speed_hz, uint8_t cols, uint8_t rows);
 
 /**
  * @brief Clear LCD display

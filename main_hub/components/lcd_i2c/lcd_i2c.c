@@ -19,30 +19,20 @@ static const char *TAG = "LCD_I2C";
 
 static esp_err_t lcd_pulse_enable(lcd_handle_t *lcd, uint8_t data) {
     esp_err_t err;
-    i2c_cmd_handle_t cmd;
-    
+    uint8_t byte;
+
     // pulse enable high
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (lcd->addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, data | LCD_EN, true);
-    i2c_master_stop(cmd);
-    err = i2c_master_cmd_begin(lcd->i2c_port, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    
+    byte = data | LCD_EN;
+    err = i2c_master_transmit(lcd->device, &byte, sizeof(byte), I2C_TIMEOUT_MS);
+
     vTaskDelay(pdMS_TO_TICKS(1));
-    
+
     // pulse enable low
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (lcd->addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, data & ~LCD_EN, true);
-    i2c_master_stop(cmd);
-    err = i2c_master_cmd_begin(lcd->i2c_port, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    
+    byte = data & ~LCD_EN;
+    err = i2c_master_transmit(lcd->device, &byte, sizeof(byte), I2C_TIMEOUT_MS);
+
     vTaskDelay(pdMS_TO_TICKS(1));
-    
+
     return err;
 }
 
@@ -75,15 +65,24 @@ static esp_err_t lcd_send_data(lcd_handle_t *lcd, uint8_t data) {
 // Public API Implementation
 // ============================================================================
 
-esp_err_t lcd_init(lcd_handle_t *lcd, i2c_port_t i2c_port, uint8_t addr,
-                   uint8_t cols, uint8_t rows) {
+esp_err_t lcd_init(lcd_handle_t *lcd, i2c_master_bus_handle_t bus, uint8_t addr,
+                   uint32_t scl_speed_hz, uint8_t cols, uint8_t rows) {
     if (lcd == NULL) {
         ESP_LOGE(TAG, "lcd handle is null");
         return ESP_ERR_INVALID_ARG;
     }
-    
-    lcd->i2c_port = i2c_port;
-    lcd->addr = addr;
+
+    i2c_device_config_t device_config = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = addr,
+        .scl_speed_hz = scl_speed_hz,
+    };
+    esp_err_t err = i2c_master_bus_add_device(bus, &device_config, &lcd->device);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "failed to add lcd to i2c bus");
+        return err;
+    }
+
     lcd->cols = cols;
     lcd->rows = rows;
     lcd->backlight_state = LCD_BACKLIGHT;
@@ -156,16 +155,7 @@ esp_err_t lcd_backlight(lcd_handle_t *lcd, bool state) {
     lcd->backlight_state = state ? LCD_BACKLIGHT : LCD_NO_BACKLIGHT;
     
     // send backlight state to i2c
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (lcd->addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, lcd->backlight_state, true);
-    i2c_master_stop(cmd);
-    
-    esp_err_t err = i2c_master_cmd_begin(lcd->i2c_port, cmd, pdMS_TO_TICKS(I2C_TIMEOUT_MS));
-    i2c_cmd_link_delete(cmd);
-    
-    return err;
+    return i2c_master_transmit(lcd->device, &lcd->backlight_state, sizeof(lcd->backlight_state), I2C_TIMEOUT_MS);
 }
 
 esp_err_t lcd_print(lcd_handle_t *lcd, const char *str) {

@@ -10,7 +10,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "esp_nimble_hci.h"
@@ -65,10 +65,11 @@ static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 /**
  * @brief initialize i2c master bus
- * 
+ *
+ * @param bus receives the handle of the new bus
  * @return esp_err_t ESP_OK on success
  */
-esp_err_t i2c_master_init(void);
+esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus);
 
 /**
  * @brief pir motion sensor task - polls sensor every 100ms
@@ -170,14 +171,15 @@ void app_main(void) {
     sensor_data.remote_connected = false;
     
     // initialize i2c bus
-    ret = i2c_master_init();
+    i2c_master_bus_handle_t i2c_bus;
+    ret = i2c_master_init(&i2c_bus);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize i2c");
         return;
     }
-    
+
     // initialize lcd
-    ret = lcd_init(&lcd, I2C_MASTER_NUM, LCD_ADDR, LCD_COLUMNS, LCD_ROWS);
+    ret = lcd_init(&lcd, i2c_bus, LCD_ADDR, I2C_MASTER_FREQ_HZ, LCD_COLUMNS, LCD_ROWS);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize lcd");
         return;
@@ -246,29 +248,23 @@ void app_main(void) {
 // helper functions
 // ============================================================================
 
-esp_err_t i2c_master_init(void) {
+esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus) {
     // i2c config
-    i2c_config_t config = {
-        .mode = I2C_MODE_MASTER,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    i2c_master_bus_config_t config = {
+        .i2c_port = I2C_MASTER_NUM,
         .sda_io_num = I2C_MASTER_SDA_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = I2C_MASTER_GLITCH_FILTER_CYCLES,
+        .flags.enable_internal_pullup = true,
     };
-    
-    esp_err_t ret = i2c_param_config(I2C_MASTER_NUM, &config);
+
+    esp_err_t ret = i2c_new_master_bus(&config, bus);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to configure i2c parameters");
+        ESP_LOGE(TAG, "failed to create i2c master bus");
         return ret;
     }
-    
-    ret = i2c_driver_install(I2C_MASTER_NUM, config.mode, 0, 0, 0);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to install i2c driver");
-        return ret;
-    }
-    
+
     ESP_LOGI(TAG, "i2c master initialized");
     return ESP_OK;
 }

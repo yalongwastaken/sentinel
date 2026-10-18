@@ -10,7 +10,7 @@
 #include "main_hub_system_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 // test configuration
@@ -26,7 +26,7 @@ static lcd_handle_t lcd;
 static uint32_t counter = 0;
 
 // function prototypes
-esp_err_t i2c_master_init(void);
+esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus);
 void test_lcd_i2c(void *pvParameters);
 
 void app_main(void) {
@@ -35,14 +35,15 @@ void app_main(void) {
     ESP_LOGI(TAG, "Starting LCD I2C test...");
 
     // initialize i2c
-    ret = i2c_master_init();
+    i2c_master_bus_handle_t i2c_bus;
+    ret = i2c_master_init(&i2c_bus);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize i2c master");
         return;
     }
 
     // initialize lcd
-    ret = lcd_init(&lcd, I2C_MASTER_NUM, LCD_ADDR, LCD_COLUMNS, LCD_ROWS);
+    ret = lcd_init(&lcd, i2c_bus, LCD_ADDR, I2C_MASTER_FREQ_HZ, LCD_COLUMNS, LCD_ROWS);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize lcd");
         return;
@@ -67,26 +68,20 @@ void app_main(void) {
     );
 }
 
-esp_err_t i2c_master_init(void) {
+esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus) {
     // i2c config
-    i2c_config_t config = {
-        .mode = I2C_MODE_MASTER,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+    i2c_master_bus_config_t config = {
+        .i2c_port = I2C_MASTER_NUM,
         .sda_io_num = I2C_MASTER_SDA_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_MASTER_FREQ_HZ
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = I2C_MASTER_GLITCH_FILTER_CYCLES,
+        .flags.enable_internal_pullup = true,
     };
-    
-    esp_err_t ret = i2c_param_config(I2C_MASTER_NUM, &config);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to configure i2c parameters");
-        return ret;
-    }
 
-    ret = i2c_driver_install(I2C_MASTER_NUM, config.mode, 0, 0, 0);
+    esp_err_t ret = i2c_new_master_bus(&config, bus);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to install i2c driver");
+        ESP_LOGE(TAG, "failed to create i2c master bus");
         return ret;
     }
 
