@@ -75,9 +75,9 @@ Drivers are ESP-IDF components written against the datasheet rather than
 wrapping a library. Placement follows use:
 
 - `components/` at the repository root — drivers used by **both** nodes.
-  Currently `pir`. Each project reaches it through `EXTRA_COMPONENT_DIRS`.
+  Currently `hcsr501`. Each project reaches it through `EXTRA_COMPONENT_DIRS`.
 - `main_hub/components/` — drivers used only by the hub: `dht11`, `hcsr04`,
-  `lcd_i2c`.
+  `hd44780_pcf8574`.
 
 Drivers do not import other drivers; composition happens in the application
 layer. PIR debounce is 50 ms on both nodes.

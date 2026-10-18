@@ -16,14 +16,14 @@
 #include "host/ble_hs.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
-#include "pir.h"
+#include "hcsr501.h"
 #include "remote_node_system_config.h"
 
 static const char *TAG = "REMOTE_NODE";
 
 // sensor data
 static uint8_t motion_detected = 0;
-static uint16_t motion_char_handle;
+static uint16_t motion_characteristic_handle;
 
 // ============================================================================
 // function prototypes
@@ -32,7 +32,7 @@ static uint16_t motion_char_handle;
 /**
  * @brief advertise ble service for remote node discovery
  */
-static void ble_advertise(void);
+static void start_advertising(void);
 
 /**
  * @brief handle gatt characteristic read requests
@@ -43,7 +43,8 @@ static void ble_advertise(void);
  * @param arg user argument
  * @return int status code
  */
-static int motion_char_access(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg);
+static int handle_motion_characteristic_access(uint16_t conn_handle, uint16_t attr_handle,
+                                               struct ble_gatt_access_ctxt *ctxt, void *arg);
 
 /**
  * @brief handle ble gap events (connect, disconnect, advertising)
@@ -52,47 +53,47 @@ static int motion_char_access(uint16_t conn_handle, uint16_t attr_handle, struct
  * @param arg user argument
  * @return int status code
  */
-static int ble_gap_event(struct ble_gap_event *event, void *arg);
+static int handle_gap_event(struct ble_gap_event *event, void *arg);
 
 /**
  * @brief ble host task - runs nimble stack
  *
  * @param param task parameters
  */
-static void ble_host_task(void *param);
+static void run_nimble_host_task(void *param);
 
 /**
  * @brief callback when ble stack is synced and ready
  */
-static void ble_on_sync(void);
+static void handle_ble_host_sync(void);
 
 /**
  * @brief callback when ble stack resets
  *
  * @param reason reset reason code
  */
-static void ble_on_reset(int reason);
+static void handle_ble_host_reset(int reason);
 
 /**
  * @brief sensor reading task - polls pir sensor and updates motion data
  *
  * @param pvParameters task parameters
  */
-static void sensor_task(void *pvParameters);
+static void motion_sample_task(void *pvParameters);
 
 // ============================================================================
 // gatt service definition
 // ============================================================================
 
-static const struct ble_gatt_svc_def gatt_svcs[] = {
+static const struct ble_gatt_svc_def gatt_services[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
         .uuid = BLE_UUID16_DECLARE(BLE_SERVICE_UUID),
         .characteristics = (struct ble_gatt_chr_def[]){{
                                                            .uuid = BLE_UUID16_DECLARE(BLE_MOTION_CHAR_UUID),
-                                                           .access_cb = motion_char_access,
+                                                           .access_cb = handle_motion_characteristic_access,
                                                            .flags = BLE_GATT_CHR_F_READ,
-                                                           .val_handle = &motion_char_handle,
+                                                           .val_handle = &motion_characteristic_handle,
                                                        },
                                                        {0}},
     },
@@ -105,46 +106,47 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
 void app_main(void)
 {
     // error management
-    esp_err_t ret;
+    esp_err_t err;
 
     ESP_LOGI(TAG, "remote sensor node starting...");
 
     // initialize nvs
-    ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
-        ret = nvs_flash_init();
+        err = nvs_flash_init();
     }
-    if (ret != ESP_OK) {
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize nvs");
         return;
     }
 
     // initialize nimble
-    ret = nimble_port_init();
-    if (ret != ESP_OK) {
+    err = nimble_port_init();
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize nimble");
         return;
     }
 
     // configure host
-    ble_hs_cfg.sync_cb = ble_on_sync;
-    ble_hs_cfg.reset_cb = ble_on_reset;
+    ble_hs_cfg.sync_cb = handle_ble_host_sync;
+    ble_hs_cfg.reset_cb = handle_ble_host_reset;
 
     // initialize gatt services
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ble_gatts_count_cfg(gatt_svcs);
-    ble_gatts_add_svcs(gatt_svcs);
+    ble_gatts_count_cfg(gatt_services);
+    ble_gatts_add_svcs(gatt_services);
 
     // set device name
     ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
 
     // start ble host task
-    nimble_port_freertos_init(ble_host_task);
+    nimble_port_freertos_init(run_nimble_host_task);
 
     // create sensor reading task
-    xTaskCreate(sensor_task, "sensor_task", SENSOR_TASK_STACK_SIZE, NULL, SENSOR_TASK_PRIORITY, NULL);
+    xTaskCreate(motion_sample_task, "motion_sample_task", MOTION_SAMPLE_TASK_STACK_BYTES, NULL,
+                MOTION_SAMPLE_TASK_PRIORITY, NULL);
 
     ESP_LOGI(TAG, "initialization complete");
 }
@@ -153,7 +155,7 @@ void app_main(void)
 // ble functions
 // ============================================================================
 
-static void ble_advertise(void)
+static void start_advertising(void)
 {
     struct ble_hs_adv_fields fields = {0};
 
@@ -168,12 +170,13 @@ static void ble_advertise(void)
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
-    ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+    ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER, &adv_params, handle_gap_event, NULL);
 
     ESP_LOGI(TAG, "ble advertising started");
 }
 
-static int motion_char_access(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
+static int handle_motion_characteristic_access(uint16_t conn_handle, uint16_t attr_handle,
+                                               struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
         os_mbuf_append(ctxt->om, &motion_detected, sizeof(motion_detected));
@@ -183,7 +186,7 @@ static int motion_char_access(uint16_t conn_handle, uint16_t attr_handle, struct
     return BLE_ATT_ERR_UNLIKELY;
 }
 
-static int ble_gap_event(struct ble_gap_event *event, void *arg)
+static int handle_gap_event(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
@@ -192,44 +195,44 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "client disconnected, restarting advertising");
-        ble_advertise();
+        start_advertising();
         break;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "advertising complete, restarting");
-        ble_advertise();
+        start_advertising();
         break;
     }
     return 0;
 }
 
-static void ble_host_task(void *param)
+static void run_nimble_host_task(void *param)
 {
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
 
-static void ble_on_sync(void)
+static void handle_ble_host_sync(void)
 {
     ESP_LOGI(TAG, "ble stack synced");
-    ble_advertise();
+    start_advertising();
 }
 
-static void ble_on_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason: %d", reason); }
+static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason: %d", reason); }
 
 // ============================================================================
 // sensor task
 // ============================================================================
 
-static void sensor_task(void *pvParameters)
+static void motion_sample_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "sensor task started");
 
     // initialize pir
-    pir_sensor_t pir;
-    pir_init(&pir, PIR_GPIO_PIN, PIR_DEBOUNCE_TIME_MS);
+    hcsr501_sensor_t hcsr501_sensor;
+    hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN, HCSR501_DEBOUNCE_MS);
 
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t last_wake_tick = xTaskGetTickCount();
 
     while (1) {
         // read pir sensor (simulated for now)
@@ -237,7 +240,7 @@ static void sensor_task(void *pvParameters)
 
         ESP_LOGI(TAG, "motion status: %d", motion_detected);
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(SENSOR_READ_INTERVAL_MS));
+        vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(MOTION_SAMPLE_TASK_PERIOD_MS));
     }
 
     vTaskDelete(NULL);

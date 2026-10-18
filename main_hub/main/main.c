@@ -20,10 +20,10 @@
 #include "host/ble_gap.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
-#include "pir.h"
+#include "hcsr501.h"
 #include "hcsr04.h"
 #include "dht11.h"
-#include "lcd_i2c.h"
+#include "hd44780_pcf8574.h"
 #include "main_hub_system_config.h"
 
 static const char *TAG = "MAIN_HUB";
@@ -38,66 +38,66 @@ static const char *TAG = "MAIN_HUB";
 // ============================================================================
 
 static struct {
-    bool motion_detected;
+    bool local_motion_detected;
     float distance_cm;
-    float temperature;
-    float humidity;
+    float temperature_celsius;
+    float relative_humidity_percent;
     bool remote_motion_detected;
     bool remote_connected;
     SemaphoreHandle_t mutex;
-} sensor_data;
+} latest_readings;
 
 // ============================================================================
 // sensor instances
 // ============================================================================
 
-static pir_sensor_t pir_sensor;
-static hcsr04_sensor_t ultrasonic_sensor;
+static hcsr501_sensor_t hcsr501_sensor;
+static hcsr04_sensor_t hcsr04_sensor;
 static dht11_sensor_t dht11_sensor;
-static lcd_handle_t lcd;
+static hd44780_t lcd;
 
 // ble connection handle
-static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
 
 // ============================================================================
 // function prototypes
 // ============================================================================
 
 /**
- * @brief initialize i2c master bus
+ * @brief create the i2c master bus the lcd is wired to
  *
  * @param bus receives the handle of the new bus
  * @return esp_err_t ESP_OK on success
  */
-esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus);
+esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus);
 
 /**
- * @brief pir motion sensor task - polls sensor every 100ms
+ * @brief pir motion sensor task - polls sensor every LOCAL_MOTION_TASK_PERIOD_MS
  *
  * @param pvParameters task parameters
  */
-void pir_task(void *pvParameters);
+void local_motion_task(void *pvParameters);
 
 /**
- * @brief ultrasonic distance sensor task - polls sensor every 200ms
+ * @brief ultrasonic distance sensor task - polls sensor every DISTANCE_TASK_PERIOD_MS
  *
  * @param pvParameters task parameters
  */
-void ultrasonic_task(void *pvParameters);
+void distance_task(void *pvParameters);
 
 /**
- * @brief dht11 temperature/humidity sensor task - polls sensor every 3s
+ * @brief dht11 temperature/humidity sensor task - polls sensor every TEMPERATURE_HUMIDITY_TASK_PERIOD_MS
  *
  * @param pvParameters task parameters
  */
-void dht11_task(void *pvParameters);
+void temperature_humidity_task(void *pvParameters);
 
 /**
- * @brief lcd display task - updates display every 1s
+ * @brief lcd display task - updates display every DISPLAY_REFRESH_TASK_PERIOD_MS
  *
  * @param pvParameters task parameters
  */
-void lcd_task(void *pvParameters);
+void display_refresh_task(void *pvParameters);
 
 /**
  * @brief ble client task - scans and connects to remote node
@@ -113,26 +113,26 @@ void ble_client_task(void *pvParameters);
  * @param arg user argument
  * @return int status code
  */
-static int ble_gap_event(struct ble_gap_event *event, void *arg);
+static int handle_gap_event(struct ble_gap_event *event, void *arg);
 
 /**
  * @brief ble host task - runs nimble stack
  *
  * @param param task parameters
  */
-static void ble_host_task(void *param);
+static void run_nimble_host_task(void *param);
 
 /**
  * @brief callback when ble stack is synced
  */
-static void ble_on_sync(void);
+static void handle_ble_host_sync(void);
 
 /**
  * @brief callback when ble stack resets
  *
  * @param reason reset reason
  */
-static void ble_on_reset(int reason);
+static void handle_ble_host_reset(int reason);
 
 // ============================================================================
 // main application
@@ -141,106 +141,108 @@ static void ble_on_reset(int reason);
 void app_main(void)
 {
     // error management
-    esp_err_t ret;
+    esp_err_t err;
 
     ESP_LOGI(TAG, "main security hub starting...");
 
     // initialize nvs
-    ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
-        ret = nvs_flash_init();
+        err = nvs_flash_init();
     }
-    if (ret != ESP_OK) {
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize nvs");
         return;
     }
 
     // create mutex for sensor data
-    sensor_data.mutex = xSemaphoreCreateMutex();
-    if (sensor_data.mutex == NULL) {
+    latest_readings.mutex = xSemaphoreCreateMutex();
+    if (latest_readings.mutex == NULL) {
         ESP_LOGE(TAG, "failed to create mutex");
         return;
     }
 
     // initialize sensor data
-    sensor_data.motion_detected = false;
-    sensor_data.distance_cm = 0.0f;
-    sensor_data.temperature = 0.0f;
-    sensor_data.humidity = 0.0f;
-    sensor_data.remote_motion_detected = false;
-    sensor_data.remote_connected = false;
+    latest_readings.local_motion_detected = false;
+    latest_readings.distance_cm = 0.0f;
+    latest_readings.temperature_celsius = 0.0f;
+    latest_readings.relative_humidity_percent = 0.0f;
+    latest_readings.remote_motion_detected = false;
+    latest_readings.remote_connected = false;
 
     // initialize i2c bus
     i2c_master_bus_handle_t i2c_bus;
-    ret = i2c_master_init(&i2c_bus);
-    if (ret != ESP_OK) {
+    err = create_i2c_master_bus(&i2c_bus);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize i2c");
         return;
     }
 
     // initialize lcd
-    ret = lcd_init(&lcd, i2c_bus, LCD_ADDR, I2C_MASTER_FREQ_HZ, LCD_COLUMNS, LCD_ROWS);
-    if (ret != ESP_OK) {
+    err = hd44780_init(&lcd, i2c_bus, PCF8574_I2C_ADDRESS, PCF8574_I2C_CLOCK_HZ, LCD1602_COLUMNS, LCD1602_ROWS);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize lcd");
         return;
     }
 
     // display startup message
-    lcd_clear(&lcd);
-    lcd_set_cursor(&lcd, 0, 0);
-    lcd_print(&lcd, "Security System");
-    lcd_set_cursor(&lcd, 0, 1);
-    lcd_print(&lcd, "Initializing...");
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    hd44780_clear(&lcd);
+    hd44780_set_cursor(&lcd, 0, 0);
+    hd44780_print(&lcd, "Security System");
+    hd44780_set_cursor(&lcd, 0, 1);
+    hd44780_print(&lcd, "Initializing...");
+    vTaskDelay(pdMS_TO_TICKS(STARTUP_MESSAGE_MS));
 
     // initialize pir sensor
-    ret = pir_init(&pir_sensor, PIR_GPIO_PIN, PIR_DEBOUNCE_TIME_MS);
-    if (ret != ESP_OK) {
+    err = hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN, HCSR501_DEBOUNCE_MS);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize pir sensor");
         return;
     }
 
     // initialize ultrasonic sensor
-    ret = hcsr04_init(&ultrasonic_sensor, HCSR04_PIN_TRIG, HCSR04_PIN_ECHO, HCSR04_TIMEOUT_US);
-    if (ret != ESP_OK) {
+    err = hcsr04_init(&hcsr04_sensor, HCSR04_TRIGGER_GPIO_PIN, HCSR04_ECHO_GPIO_PIN, HCSR04_ECHO_TIMEOUT_US);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize ultrasonic sensor");
         return;
     }
 
     // initialize dht11 sensor
-    ret = dht11_init(&dht11_sensor, DHT11_GPIO_PIN);
-    if (ret != ESP_OK) {
+    err = dht11_init(&dht11_sensor, DHT11_GPIO_PIN);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize dht11 sensor");
         return;
     }
 
     // initialize ble
-    ret = nimble_port_init();
-    if (ret != ESP_OK) {
+    err = nimble_port_init();
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize nimble");
         return;
     }
 
     // configure ble host
-    ble_hs_cfg.sync_cb = ble_on_sync;
-    ble_hs_cfg.reset_cb = ble_on_reset;
+    ble_hs_cfg.sync_cb = handle_ble_host_sync;
+    ble_hs_cfg.reset_cb = handle_ble_host_reset;
 
     // initialize gatt services
     ble_svc_gap_init();
     ble_svc_gatt_init();
 
     // start ble host task
-    nimble_port_freertos_init(ble_host_task);
+    nimble_port_freertos_init(run_nimble_host_task);
 
     ESP_LOGI(TAG, "all sensors and ble initialized");
 
     // create sensor tasks
-    xTaskCreate(pir_task, "pir_task", 4096, NULL, 5, NULL);
-    xTaskCreate(ultrasonic_task, "ultrasonic_task", 4096, NULL, 4, NULL);
-    xTaskCreate(dht11_task, "dht11_task", 4096, NULL, 3, NULL);
-    xTaskCreate(ble_client_task, "ble_client_task", 4096, NULL, 3, NULL);
-    xTaskCreate(lcd_task, "lcd_task", 4096, NULL, 2, NULL);
+    xTaskCreate(local_motion_task, "local_motion_task", TASK_STACK_BYTES, NULL, LOCAL_MOTION_TASK_PRIORITY, NULL);
+    xTaskCreate(distance_task, "distance_task", TASK_STACK_BYTES, NULL, DISTANCE_TASK_PRIORITY, NULL);
+    xTaskCreate(temperature_humidity_task, "temperature_humidity_task", TASK_STACK_BYTES, NULL,
+                TEMPERATURE_HUMIDITY_TASK_PRIORITY, NULL);
+    xTaskCreate(ble_client_task, "ble_client_task", TASK_STACK_BYTES, NULL, BLE_CLIENT_TASK_PRIORITY, NULL);
+    xTaskCreate(display_refresh_task, "display_refresh_task", TASK_STACK_BYTES, NULL, DISPLAY_REFRESH_TASK_PRIORITY,
+                NULL);
 
     ESP_LOGI(TAG, "all tasks created - system running");
 }
@@ -249,22 +251,22 @@ void app_main(void)
 // helper functions
 // ============================================================================
 
-esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus)
+esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus)
 {
     // i2c config
-    i2c_master_bus_config_t config = {
-        .i2c_port = I2C_MASTER_NUM,
-        .sda_io_num = I2C_MASTER_SDA_IO,
-        .scl_io_num = I2C_MASTER_SCL_IO,
+    i2c_master_bus_config_t bus_settings = {
+        .i2c_port = I2C_PORT,
+        .sda_io_num = I2C_SDA_GPIO_PIN,
+        .scl_io_num = I2C_SCL_GPIO_PIN,
         .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = I2C_MASTER_GLITCH_FILTER_CYCLES,
+        .glitch_ignore_cnt = I2C_GLITCH_FILTER_CYCLES,
         .flags.enable_internal_pullup = true,
     };
 
-    esp_err_t ret = i2c_new_master_bus(&config, bus);
-    if (ret != ESP_OK) {
+    esp_err_t err = i2c_new_master_bus(&bus_settings, bus);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to create i2c master bus");
-        return ret;
+        return err;
     }
 
     ESP_LOGI(TAG, "i2c master initialized");
@@ -275,118 +277,118 @@ esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus)
 // sensor tasks
 // ============================================================================
 
-void pir_task(void *pvParameters)
+void local_motion_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "pir task started");
 
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t last_wake_tick = xTaskGetTickCount();
 
     while (1) {
         // read pir sensor
-        bool motion = pir_read(&pir_sensor);
+        bool local_motion = hcsr501_read_level_and_count_motion_events(&hcsr501_sensor);
 
         // update shared data
-        if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-            sensor_data.motion_detected = motion;
-            xSemaphoreGive(sensor_data.mutex);
+        if (xSemaphoreTake(latest_readings.mutex, portMAX_DELAY) == pdTRUE) {
+            latest_readings.local_motion_detected = local_motion;
+            xSemaphoreGive(latest_readings.mutex);
         }
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(100));
+        vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(LOCAL_MOTION_TASK_PERIOD_MS));
     }
 
     vTaskDelete(NULL);
 }
 
-void ultrasonic_task(void *pvParameters)
+void distance_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "ultrasonic task started");
 
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t last_wake_tick = xTaskGetTickCount();
 
     while (1) {
         // read ultrasonic sensor
-        esp_err_t ret = hcsr04_read_distance(&ultrasonic_sensor);
+        esp_err_t err = hcsr04_measure_distance(&hcsr04_sensor);
 
-        if (ret == ESP_OK) {
-            float distance = hcsr04_get_last_distance(&ultrasonic_sensor);
+        if (err == ESP_OK) {
+            float distance_cm = hcsr04_get_last_distance_cm(&hcsr04_sensor);
 
             // update shared data
-            if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-                sensor_data.distance_cm = distance;
-                xSemaphoreGive(sensor_data.mutex);
+            if (xSemaphoreTake(latest_readings.mutex, portMAX_DELAY) == pdTRUE) {
+                latest_readings.distance_cm = distance_cm;
+                xSemaphoreGive(latest_readings.mutex);
             }
         }
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(200));
+        vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISTANCE_TASK_PERIOD_MS));
     }
 
     vTaskDelete(NULL);
 }
 
-void dht11_task(void *pvParameters)
+void temperature_humidity_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "dht11 task started");
 
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t last_wake_tick = xTaskGetTickCount();
 
     while (1) {
         // read dht11 sensor
-        esp_err_t ret = dht11_read(&dht11_sensor);
+        esp_err_t err = dht11_read_temperature_and_humidity(&dht11_sensor);
 
-        if (ret == ESP_OK) {
-            float temp = dht11_get_temperature(&dht11_sensor);
-            float humidity = dht11_get_humidity(&dht11_sensor);
+        if (err == ESP_OK) {
+            float temperature_celsius = dht11_get_last_temperature_celsius(&dht11_sensor);
+            float relative_humidity_percent = dht11_get_last_relative_humidity_percent(&dht11_sensor);
 
             // update shared data
-            if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-                sensor_data.temperature = temp;
-                sensor_data.humidity = humidity;
-                xSemaphoreGive(sensor_data.mutex);
+            if (xSemaphoreTake(latest_readings.mutex, portMAX_DELAY) == pdTRUE) {
+                latest_readings.temperature_celsius = temperature_celsius;
+                latest_readings.relative_humidity_percent = relative_humidity_percent;
+                xSemaphoreGive(latest_readings.mutex);
             }
         }
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(3000));
+        vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(TEMPERATURE_HUMIDITY_TASK_PERIOD_MS));
     }
 
     vTaskDelete(NULL);
 }
 
-void lcd_task(void *pvParameters)
+void display_refresh_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "lcd task started");
 
-    TickType_t last_wake = xTaskGetTickCount();
+    TickType_t last_wake_tick = xTaskGetTickCount();
 
     // initialize display variables
-    bool motion = false;
+    bool local_motion = false;
     bool remote_motion = false;
-    float distance = 0.0f;
-    float temp = 0.0f;
-    float humidity = 0.0f;
+    float distance_cm = 0.0f;
+    float temperature_celsius = 0.0f;
+    float relative_humidity_percent = 0.0f;
 
     while (1) {
         // read shared sensor data
-        if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-            motion = sensor_data.motion_detected;
-            remote_motion = sensor_data.remote_motion_detected;
-            distance = sensor_data.distance_cm;
-            temp = sensor_data.temperature;
-            humidity = sensor_data.humidity;
-            xSemaphoreGive(sensor_data.mutex);
+        if (xSemaphoreTake(latest_readings.mutex, portMAX_DELAY) == pdTRUE) {
+            local_motion = latest_readings.local_motion_detected;
+            remote_motion = latest_readings.remote_motion_detected;
+            distance_cm = latest_readings.distance_cm;
+            temperature_celsius = latest_readings.temperature_celsius;
+            relative_humidity_percent = latest_readings.relative_humidity_percent;
+            xSemaphoreGive(latest_readings.mutex);
         }
 
         // update lcd display
-        lcd_clear(&lcd);
+        hd44780_clear(&lcd);
 
         // line 1: motion and distance
-        lcd_set_cursor(&lcd, 0, 0);
-        lcd_printf(&lcd, "M:%c D:%.0fcm", motion ? 'Y' : 'N', distance);
+        hd44780_set_cursor(&lcd, 0, 0);
+        hd44780_printf(&lcd, "M:%c D:%.0fcm", local_motion ? 'Y' : 'N', distance_cm);
 
         // line 2: temperature and humidity
-        lcd_set_cursor(&lcd, 0, 1);
-        lcd_printf(&lcd, "T:%.0fC H:%.0f%%", temp, humidity);
+        hd44780_set_cursor(&lcd, 0, 1);
+        hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent);
 
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000));
+        vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISPLAY_REFRESH_TASK_PERIOD_MS));
     }
 
     vTaskDelete(NULL);
@@ -396,17 +398,17 @@ void lcd_task(void *pvParameters)
 // ble functions
 // ============================================================================
 
-static void ble_host_task(void *param)
+static void run_nimble_host_task(void *param)
 {
     nimble_port_run();
     nimble_port_freertos_deinit();
 }
 
-static void ble_on_sync(void) { ESP_LOGI(TAG, "ble stack synced"); }
+static void handle_ble_host_sync(void) { ESP_LOGI(TAG, "ble stack synced"); }
 
-static void ble_on_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason: %d", reason); }
+static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason: %d", reason); }
 
-static int ble_gap_event(struct ble_gap_event *event, void *arg)
+static int handle_gap_event(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
     case BLE_GAP_EVENT_DISC:
@@ -420,24 +422,24 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             ESP_LOGI(TAG, "connected to remote node");
-            ble_conn_handle = event->connect.conn_handle;
+            remote_connection_handle = event->connect.conn_handle;
 
             // update connection status
-            if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-                sensor_data.remote_connected = true;
-                xSemaphoreGive(sensor_data.mutex);
+            if (xSemaphoreTake(latest_readings.mutex, portMAX_DELAY) == pdTRUE) {
+                latest_readings.remote_connected = true;
+                xSemaphoreGive(latest_readings.mutex);
             }
         }
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnected from remote node");
-        ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
 
         // update connection status
-        if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-            sensor_data.remote_connected = false;
-            xSemaphoreGive(sensor_data.mutex);
+        if (xSemaphoreTake(latest_readings.mutex, portMAX_DELAY) == pdTRUE) {
+            latest_readings.remote_connected = false;
+            xSemaphoreGive(latest_readings.mutex);
         }
         break;
     }
@@ -454,7 +456,7 @@ void ble_client_task(void *pvParameters)
 
     while (1) {
         // if not connected, try to scan/connect
-        if (ble_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        if (remote_connection_handle == BLE_HS_CONN_HANDLE_NONE) {
             ESP_LOGI(TAG, "scanning for remote node...");
 
             // TODO: implement ble scanning and connection
