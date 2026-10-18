@@ -33,12 +33,12 @@ Battery-powered satellite sensor.
 ```
 sentinel/
 ├── components/              # Drivers shared by both nodes
-│   └── pir/                 # PIR motion sensor
+│   └── hcsr501/             # HC-SR501 PIR motion sensor
 ├── main_hub/                # Main hub firmware (ESP32 #1)
 │   ├── components/          # Hub-only drivers
 │   │   ├── dht11/           # Temperature/humidity sensor
 │   │   ├── hcsr04/          # Ultrasonic distance sensor
-│   │   └── lcd_i2c/         # I2C LCD display
+│   │   └── hd44780_pcf8574/ # LCD1602 over a PCF8574 I2C backpack
 │   ├── main/
 │   │   ├── include/         # Node configuration
 │   │   └── main.c

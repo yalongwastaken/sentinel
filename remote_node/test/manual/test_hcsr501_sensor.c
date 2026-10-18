@@ -1,5 +1,5 @@
 /**
- * @file test_pir_sensor.c
+ * @file test_hcsr501_sensor.c
  * @author Anthony Yalong
  * @brief PIR motion sensor test application - validates sensor initialization,
  *        motion detection, edge detection, debouncing, and event counting.
@@ -7,10 +7,10 @@
  */
 
 // imports
-#include "pir.h"
+#include "hcsr501.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
-#include "main_hub_system_config.h"
+#include "remote_node_system_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -25,7 +25,7 @@
 static const char *TAG = "test_pir_sensor";
 
 // pir task
-static pir_sensor_t pir_sensor;
+static hcsr501_sensor_t hcsr501_sensor;
 static TickType_t pir_sensor_task_last_wake;
 static uint32_t pir_sensor_last_motion_count;
 static bool pir_sensor_last_value;
@@ -52,7 +52,7 @@ void app_main(void)
     pir_sensor_last_value = false;
 
     // initalize pir
-    ret = pir_init(&pir_sensor, PIR_GPIO_PIN, PIR_DEBOUNCE_TIME_MS);
+    ret = hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN, HCSR501_DEBOUNCE_MS);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize pir sensor");
         return;
@@ -66,7 +66,7 @@ void test_pir_sensor(void *pvParameters)
 {
     while (true) {
         // read sensor
-        bool cur_reading = pir_read(&pir_sensor);
+        bool cur_reading = hcsr501_read_level_and_count_motion_events(&hcsr501_sensor);
         if (pir_sensor_last_value != cur_reading) {
             ESP_LOGI(TAG, "led %s", cur_reading ? "ON" : "OFF");
             gpio_set_level(TEST_LED, cur_reading);
@@ -74,7 +74,7 @@ void test_pir_sensor(void *pvParameters)
         }
 
         // motion count update
-        uint32_t pir_sensor_motion_count = pir_get_motion_count(&pir_sensor);
+        uint32_t pir_sensor_motion_count = hcsr501_get_motion_event_count(&hcsr501_sensor);
         if (pir_sensor_last_motion_count != pir_sensor_motion_count) {
             ESP_LOGI(TAG, "motion count %lu", pir_sensor_motion_count);
             pir_sensor_last_motion_count = pir_sensor_motion_count;
@@ -83,7 +83,7 @@ void test_pir_sensor(void *pvParameters)
         // motion count reset
         if (pir_sensor_motion_count == PIR_MOTION_COUNT_MAX) {
             ESP_LOGI(TAG, "motion count at max value: %lu.  reseting to 0...", pir_sensor_motion_count);
-            pir_reset_motion_count(&pir_sensor);
+            hcsr501_reset_motion_event_count(&hcsr501_sensor);
             pir_sensor_last_motion_count = 0;
         }
 

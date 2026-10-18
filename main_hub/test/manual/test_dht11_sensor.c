@@ -54,7 +54,7 @@ void test_dht11_sensor(void *pvParameters)
 
     while (true) {
         // read
-        ret = dht11_read(&sensor);
+        ret = dht11_read_temperature_and_humidity(&sensor);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "failed to read dht11 sensor");
             vTaskDelayUntil(&dht11_sensor_task_last_wake, pdMS_TO_TICKS(TASK_DELAY));
@@ -62,8 +62,8 @@ void test_dht11_sensor(void *pvParameters)
         }
 
         // log results
-        float temp = dht11_get_temperature(&sensor);
-        float humidity = dht11_get_humidity(&sensor);
+        float temp = dht11_get_last_temperature_celsius(&sensor);
+        float humidity = dht11_get_last_relative_humidity_percent(&sensor);
         ESP_LOGI(TAG, "Temp: %.1f°C, Humidity: %.1f%%", temp, humidity);
 
         // delay

@@ -12,10 +12,15 @@
 
 static const char *TAG = "HCSR04";
 
-esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trig_pin, gpio_num_t echo_pin, uint32_t timeout)
+#define HCSR04_TRIGGER_SETTLE_LOW_US 2
+#define HCSR04_TRIGGER_PULSE_US 10
+#define HCSR04_SPEED_OF_SOUND_CM_PER_US 0.034
+
+esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trigger_gpio_pin, gpio_num_t echo_gpio_pin,
+                      uint32_t echo_timeout_us)
 {
     // error management
-    esp_err_t ret;
+    esp_err_t err;
 
     // sanity check
     if (sensor == NULL) {
@@ -24,45 +29,45 @@ esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trig_pin, gpio_num_t e
     }
 
     // trig config
-    gpio_config_t trig_config = {
+    gpio_config_t trigger_gpio_settings = {
         .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = (1ULL << trig_pin),
+        .pin_bit_mask = (1ULL << trigger_gpio_pin),
         .intr_type = GPIO_INTR_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en = GPIO_PULLUP_DISABLE,
     };
-    ret = gpio_config(&trig_config);
-    if (ret != ESP_OK) {
+    err = gpio_config(&trigger_gpio_settings);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize hcsr04 sensor's trigger pin");
-        return ret;
+        return err;
     }
 
     // echo config
-    gpio_config_t echo_config = {
+    gpio_config_t echo_gpio_settings = {
         .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = (1ULL << echo_pin),
+        .pin_bit_mask = (1ULL << echo_gpio_pin),
         .intr_type = GPIO_INTR_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en = GPIO_PULLUP_DISABLE,
     };
-    ret = gpio_config(&echo_config);
-    if (ret != ESP_OK) {
+    err = gpio_config(&echo_gpio_settings);
+    if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize hcsr04 sensor's echo pin");
-        return ret;
+        return err;
     }
 
     // intialize state
-    gpio_set_level(trig_pin, 0);
-    sensor->trig_pin = trig_pin;
-    sensor->echo_pin = echo_pin;
+    gpio_set_level(trigger_gpio_pin, 0);
+    sensor->trigger_gpio_pin = trigger_gpio_pin;
+    sensor->echo_gpio_pin = echo_gpio_pin;
     sensor->last_distance_cm = 0.0;
-    sensor->timeout_us = timeout;
+    sensor->echo_timeout_us = echo_timeout_us;
 
     ESP_LOGI(TAG, "successfully initialized hcsr04 sensor");
     return ESP_OK;
 }
 
-esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor)
+esp_err_t hcsr04_measure_distance(hcsr04_sensor_t *sensor)
 {
     // sanity check
     if (sensor == NULL) {
@@ -70,49 +75,47 @@ esp_err_t hcsr04_read_distance(hcsr04_sensor_t *sensor)
         return ESP_ERR_INVALID_ARG;
     }
 
-    // send 10us trigger pulse
-    gpio_set_level(sensor->trig_pin, 0);
-    esp_rom_delay_us(2);
-    gpio_set_level(sensor->trig_pin, 1);
-    esp_rom_delay_us(10);
-    gpio_set_level(sensor->trig_pin, 0);
+    // send trigger pulse
+    gpio_set_level(sensor->trigger_gpio_pin, 0);
+    esp_rom_delay_us(HCSR04_TRIGGER_SETTLE_LOW_US);
+    gpio_set_level(sensor->trigger_gpio_pin, 1);
+    esp_rom_delay_us(HCSR04_TRIGGER_PULSE_US);
+    gpio_set_level(sensor->trigger_gpio_pin, 0);
 
     // wait for ECHO to go HIGH (with timeout)
-    int64_t start_time = esp_timer_get_time();
-    while (gpio_get_level(sensor->echo_pin) == 0) {
-        if ((esp_timer_get_time() - start_time) > sensor->timeout_us) {
+    int64_t wait_start_us = esp_timer_get_time();
+    while (gpio_get_level(sensor->echo_gpio_pin) == 0) {
+        if ((esp_timer_get_time() - wait_start_us) > sensor->echo_timeout_us) {
             ESP_LOGW(TAG, "timeout waiting for ECHO HIGH");
             return ESP_ERR_TIMEOUT;
         }
     }
 
     // record when ECHO went HIGH
-    int64_t echo_start = esp_timer_get_time();
+    int64_t echo_rise_us = esp_timer_get_time();
 
     // wait for ECHO to go LOW (with timeout)
-    while (gpio_get_level(sensor->echo_pin) == 1) {
-        if ((esp_timer_get_time() - echo_start) > sensor->timeout_us) {
+    while (gpio_get_level(sensor->echo_gpio_pin) == 1) {
+        if ((esp_timer_get_time() - echo_rise_us) > sensor->echo_timeout_us) {
             ESP_LOGW(TAG, "timeout waiting for ECHO LOW");
             return ESP_ERR_TIMEOUT;
         }
     }
 
     // record when ECHO went LOW
-    int64_t echo_end = esp_timer_get_time();
+    int64_t echo_fall_us = esp_timer_get_time();
 
-    // calculate pulse width
-    int64_t pulse_width = echo_end - echo_start;
+    // the echo pulse lasts as long as the sound's round trip
+    int64_t echo_round_trip_us = echo_fall_us - echo_rise_us;
 
-    // calculate distance: speed of sound = 343 m/s = 0.0343 cm/μs
-    // distance = (pulse_width * 0.0343) / 2
-    sensor->last_distance_cm = (pulse_width * 0.034) / 2.0;
-    ESP_LOGD(TAG, "distance: %.2f cm (pulse: %lld us)", sensor->last_distance_cm, pulse_width);
+    sensor->last_distance_cm = (echo_round_trip_us * HCSR04_SPEED_OF_SOUND_CM_PER_US) / 2.0;
+    ESP_LOGD(TAG, "distance: %.2f cm (pulse: %lld us)", sensor->last_distance_cm, echo_round_trip_us);
 
     ESP_LOGI(TAG, "successfully read distance of hcsr04 sensor: %0.02f", sensor->last_distance_cm);
     return ESP_OK;
 }
 
-float hcsr04_get_last_distance(const hcsr04_sensor_t *sensor)
+float hcsr04_get_last_distance_cm(const hcsr04_sensor_t *sensor)
 {
     // sanity check
     if (sensor == NULL) {
