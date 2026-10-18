@@ -14,7 +14,7 @@
 #include "esp_log.h"
 
 // test configuration
-#define TASK_DELAY_MS 1000        // 1s task delay
+#define TASK_DELAY_MS 1000 // 1s task delay
 #define TASK_STACK_DEPTH 4096
 #define TASK_PRIORITY 5
 
@@ -29,7 +29,8 @@ static uint32_t counter = 0;
 esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus);
 void test_lcd_i2c(void *pvParameters);
 
-void app_main(void) {
+void app_main(void)
+{
     esp_err_t ret;
 
     ESP_LOGI(TAG, "Starting LCD I2C test...");
@@ -54,21 +55,15 @@ void app_main(void) {
     lcd_print(&lcd, "lcd test");
     lcd_set_cursor(&lcd, 0, 1);
     lcd_print(&lcd, "initializing...");
-    
+
     vTaskDelay(pdMS_TO_TICKS(2000));
 
     // create lcd task
-    xTaskCreate(
-        test_lcd_i2c,
-        "test_lcd_i2c",
-        TASK_STACK_DEPTH,
-        NULL,
-        TASK_PRIORITY,
-        NULL
-    );
+    xTaskCreate(test_lcd_i2c, "test_lcd_i2c", TASK_STACK_DEPTH, NULL, TASK_PRIORITY, NULL);
 }
 
-esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus) {
+esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus)
+{
     // i2c config
     i2c_master_bus_config_t config = {
         .i2c_port = I2C_MASTER_NUM,
@@ -89,7 +84,8 @@ esp_err_t i2c_master_init(i2c_master_bus_handle_t *bus) {
     return ESP_OK;
 }
 
-void test_lcd_i2c(void *pvParameters) {
+void test_lcd_i2c(void *pvParameters)
+{
     TickType_t last_wake = xTaskGetTickCount();
 
     lcd_backlight(&lcd, true);
@@ -97,19 +93,19 @@ void test_lcd_i2c(void *pvParameters) {
     while (true) {
         // update display
         lcd_clear(&lcd);
-        
+
         // line 1: counter
         lcd_set_cursor(&lcd, 0, 0);
         lcd_printf(&lcd, "count: %lu", counter);
-        
+
         // line 2: message
         lcd_set_cursor(&lcd, 0, 1);
         lcd_print(&lcd, "lcd working!");
-        
+
         ESP_LOGI(TAG, "display updated - counter: %lu", counter);
-        
+
         counter++;
-        
+
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(TASK_DELAY_MS));
     }
 
