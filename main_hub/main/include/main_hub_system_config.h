@@ -31,6 +31,7 @@
 #define I2C_MASTER_NUM          I2C_NUM_0
 #define I2C_MASTER_FREQ_HZ      100000
 #define I2C_MASTER_TIMEOUT_MS   1000
+#define I2C_MASTER_GLITCH_FILTER_CYCLES 7  // espressif's recommended default
 
 // lcd Configuration
 #define LCD_ADDR                0x27
