@@ -20,6 +20,7 @@
 #include "dht11.h"
 #include "hd44780_pcf8574.h"
 #include "crash_limit.h"
+#include "remote_motion_ble.h"
 #include "main_hub_system_config.h"
 
 static const char *TAG = "MAIN_HUB";
@@ -41,7 +42,19 @@ static hcsr04_sensor_t hcsr04_sensor;
 static dht11_sensor_t dht11_sensor;
 static hd44780_t lcd;
 
-static uint16_t remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
+static const ble_uuid128_t motion_service_uuid = BLE_UUID128_INIT(REMOTE_MOTION_BLE_SERVICE_UUID_BYTES);
+static const ble_uuid128_t motion_characteristic_uuid =
+    BLE_UUID128_INIT(REMOTE_MOTION_BLE_MOTION_CHARACTERISTIC_UUID_BYTES);
+
+// only NimBLE's host task touches these, through the callbacks below, so they need no lock
+static uint8_t own_address_type;
+static struct remote_link {
+    uint16_t connection_handle;
+    uint16_t service_start_handle;
+    uint16_t service_end_handle;
+    uint16_t motion_value_handle;
+    uint16_t motion_notification_config_handle;
+} remote_link = {.connection_handle = BLE_HS_CONN_HANDLE_NONE};
 
 static esp_err_t init_nvs_flash(void);
 static void start_task_or_abort(TaskFunction_t task_function, const char *task_name, UBaseType_t priority);
@@ -50,7 +63,7 @@ void local_motion_task(void *pvParameters);
 void distance_task(void *pvParameters);
 void temperature_humidity_task(void *pvParameters);
 void display_refresh_task(void *pvParameters);
-void ble_client_task(void *pvParameters);
+static void start_scanning_for_remote(void);
 static int handle_gap_event(struct ble_gap_event *event, void *arg);
 static void run_nimble_host_task(void *param);
 static void handle_ble_host_sync(void);
@@ -97,7 +110,6 @@ void app_main(void)
     start_task_or_abort(local_motion_task, "local_motion_task", LOCAL_MOTION_TASK_PRIORITY);
     start_task_or_abort(distance_task, "distance_task", DISTANCE_TASK_PRIORITY);
     start_task_or_abort(temperature_humidity_task, "temperature_humidity_task", TEMPERATURE_HUMIDITY_TASK_PRIORITY);
-    start_task_or_abort(ble_client_task, "ble_client_task", BLE_CLIENT_TASK_PRIORITY);
     start_task_or_abort(display_refresh_task, "display_refresh_task", DISPLAY_REFRESH_TASK_PRIORITY);
 
     ESP_LOGI(TAG, "main hub running");
@@ -188,15 +200,17 @@ void display_refresh_task(void *pvParameters)
     while (1) {
         xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
         bool local_motion = latest_readings.local_motion_detected;
+        bool remote_connected = latest_readings.remote_connected;
         bool remote_motion = latest_readings.remote_motion_detected;
         float distance_cm = latest_readings.distance_cm;
         float temperature_celsius = latest_readings.temperature_celsius;
         float relative_humidity_percent = latest_readings.relative_humidity_percent;
         xSemaphoreGive(latest_readings.mutex);
 
+        char remote_motion_symbol = !remote_connected ? '-' : (remote_motion ? 'Y' : 'N');
         hd44780_clear(&lcd);
         hd44780_set_cursor(&lcd, 0, 0);
-        hd44780_printf(&lcd, "M:%c D:%.0fcm", local_motion ? 'Y' : 'N', distance_cm);
+        hd44780_printf(&lcd, "M:%c R:%c D:%.0fcm", local_motion ? 'Y' : 'N', remote_motion_symbol, distance_cm);
         hd44780_set_cursor(&lcd, 0, 1);
         hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent);
 
@@ -210,68 +224,211 @@ static void run_nimble_host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-static void handle_ble_host_sync(void) { ESP_LOGI(TAG, "ble stack synced"); }
+static void handle_ble_host_sync(void)
+{
+    int rc = ble_hs_id_infer_auto(0, &own_address_type);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "no usable ble address: nimble_rc=%d", rc);
+        return;
+    }
+    start_scanning_for_remote();
+}
 
-static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason: %d", reason); }
+static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble host reset: nimble_reason=%d", reason); }
+
+static void record_remote_link(bool remote_connected, bool remote_motion_detected)
+{
+    xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+    bool connected_changed = remote_connected != latest_readings.remote_connected;
+    bool motion_changed = remote_motion_detected != latest_readings.remote_motion_detected;
+    latest_readings.remote_connected = remote_connected;
+    latest_readings.remote_motion_detected = remote_motion_detected;
+    xSemaphoreGive(latest_readings.mutex);
+
+    if (connected_changed) {
+        ESP_LOGI(TAG, "remote_connected=%s", remote_connected ? "true" : "false");
+    }
+    if (remote_connected && (motion_changed || connected_changed)) {
+        ESP_LOGI(TAG, "remote_motion=%s", remote_motion_detected ? "true" : "false");
+    }
+}
+
+// the remote side failed or misbehaved, which is no reason to stop the hub: drop
+// the connection, and the disconnect event starts a fresh scan
+static void drop_remote_link(const char *reason)
+{
+    ESP_LOGW(TAG, "dropping the remote link: %s", reason);
+    ble_gap_terminate(remote_link.connection_handle, BLE_ERR_REM_USER_CONN_TERM);
+}
+
+static void start_scanning_for_remote(void)
+{
+    struct ble_gap_disc_params scan_params = {.passive = 1, .filter_duplicates = 1};
+    int rc = ble_gap_disc(own_address_type, BLE_HS_FOREVER, &scan_params, handle_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "scan failed to start: nimble_rc=%d", rc);
+    }
+}
+
+static bool advertises_motion_service(const struct ble_gap_disc_desc *advertisement)
+{
+    struct ble_hs_adv_fields fields;
+    if (ble_hs_adv_parse_fields(&fields, advertisement->data, advertisement->length_data) != 0) {
+        return false;
+    }
+    for (int i = 0; i < fields.num_uuids128; i++) {
+        if (ble_uuid_cmp(&fields.uuids128[i].u, &motion_service_uuid.u) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void connect_to_remote(const ble_addr_t *remote_address)
+{
+    int rc = ble_gap_disc_cancel();
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        ESP_LOGE(TAG, "scan failed to stop: nimble_rc=%d", rc);
+        return;
+    }
+    rc = ble_gap_connect(own_address_type, remote_address, REMOTE_CONNECT_TIMEOUT_MS, NULL, handle_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "connection failed to start: nimble_rc=%d", rc);
+        start_scanning_for_remote();
+    }
+}
+
+static void record_remote_motion_payload(const struct os_mbuf *payload_buffer)
+{
+    uint8_t payload;
+    uint16_t payload_length;
+    bool remote_motion_detected;
+    bool payload_is_valid = ble_hs_mbuf_to_flat(payload_buffer, &payload, sizeof(payload), &payload_length) == 0 &&
+                            payload_length == REMOTE_MOTION_BLE_MOTION_PAYLOAD_BYTES &&
+                            remote_motion_ble_decode_motion(payload, &remote_motion_detected) == ESP_OK;
+    if (!payload_is_valid) {
+        drop_remote_link("the remote sent an invalid motion payload");
+        return;
+    }
+    record_remote_link(true, remote_motion_detected);
+}
+
+static int handle_motion_read(uint16_t conn_handle, const struct ble_gatt_error *error, struct ble_gatt_attr *attr,
+                              void *arg)
+{
+    if (error->status != 0) {
+        drop_remote_link("reading the current motion failed");
+        return 0;
+    }
+    record_remote_motion_payload(attr->om);
+    return 0;
+}
+
+static int handle_subscribed(uint16_t conn_handle, const struct ble_gatt_error *error, struct ble_gatt_attr *attr,
+                             void *arg)
+{
+    if (error->status != 0) {
+        drop_remote_link("subscribing to motion failed");
+        return 0;
+    }
+    // notifications arrive only on change, so read the current value once
+    if (ble_gattc_read(conn_handle, remote_link.motion_value_handle, handle_motion_read, NULL) != 0) {
+        drop_remote_link("reading the current motion failed to start");
+    }
+    return 0;
+}
+
+static int handle_descriptor_discovered(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                        uint16_t chr_val_handle, const struct ble_gatt_dsc *descriptor, void *arg)
+{
+    if (error->status == 0) {
+        if (ble_uuid_u16(&descriptor->uuid.u) == BLE_GATT_DSC_CLT_CFG_UUID16) {
+            remote_link.motion_notification_config_handle = descriptor->handle;
+        }
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE || remote_link.motion_notification_config_handle == 0) {
+        drop_remote_link("the motion characteristic has no notification descriptor");
+        return 0;
+    }
+
+    static const uint8_t enable_notifications[] = {0x01, 0x00};
+    if (ble_gattc_write_flat(conn_handle, remote_link.motion_notification_config_handle, enable_notifications,
+                             sizeof(enable_notifications), handle_subscribed, NULL) != 0) {
+        drop_remote_link("subscribing to motion failed to start");
+    }
+    return 0;
+}
+
+static int handle_characteristic_discovered(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                            const struct ble_gatt_chr *characteristic, void *arg)
+{
+    if (error->status == 0) {
+        remote_link.motion_value_handle = characteristic->val_handle;
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE || remote_link.motion_value_handle == 0) {
+        drop_remote_link("the motion characteristic was not found");
+        return 0;
+    }
+    if (ble_gattc_disc_all_dscs(conn_handle, remote_link.motion_value_handle, remote_link.service_end_handle,
+                                handle_descriptor_discovered, NULL) != 0) {
+        drop_remote_link("descriptor discovery failed to start");
+    }
+    return 0;
+}
+
+static int handle_service_discovered(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                     const struct ble_gatt_svc *service, void *arg)
+{
+    if (error->status == 0) {
+        remote_link.service_start_handle = service->start_handle;
+        remote_link.service_end_handle = service->end_handle;
+        return 0;
+    }
+    if (error->status != BLE_HS_EDONE || remote_link.service_end_handle == 0) {
+        drop_remote_link("the motion service was not found");
+        return 0;
+    }
+    if (ble_gattc_disc_chrs_by_uuid(conn_handle, remote_link.service_start_handle, remote_link.service_end_handle,
+                                    &motion_characteristic_uuid.u, handle_characteristic_discovered, NULL) != 0) {
+        drop_remote_link("characteristic discovery failed to start");
+    }
+    return 0;
+}
 
 static int handle_gap_event(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
     case BLE_GAP_EVENT_DISC:
-        if (event->disc.length_data > 0) {
-            ESP_LOGI(TAG, "device discovered");
+        if (advertises_motion_service(&event->disc)) {
+            connect_to_remote(&event->disc.addr);
         }
         break;
 
     case BLE_GAP_EVENT_CONNECT:
-        if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "connected to remote node");
-            remote_connection_handle = event->connect.conn_handle;
-
-            xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-            latest_readings.remote_connected = true;
-            xSemaphoreGive(latest_readings.mutex);
+        if (event->connect.status != 0) {
+            start_scanning_for_remote();
+            break;
+        }
+        remote_link = (struct remote_link){.connection_handle = event->connect.conn_handle};
+        if (ble_gattc_disc_svc_by_uuid(event->connect.conn_handle, &motion_service_uuid.u, handle_service_discovered,
+                                       NULL) != 0) {
+            drop_remote_link("service discovery failed to start");
         }
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected from remote node");
-        remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
+        remote_link = (struct remote_link){.connection_handle = BLE_HS_CONN_HANDLE_NONE};
+        record_remote_link(false, false);
+        start_scanning_for_remote();
+        break;
 
-        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-        latest_readings.remote_connected = false;
-        xSemaphoreGive(latest_readings.mutex);
+    case BLE_GAP_EVENT_NOTIFY_RX:
+        if (event->notify_rx.attr_handle == remote_link.motion_value_handle) {
+            record_remote_motion_payload(event->notify_rx.om);
+        }
         break;
     }
-
     return 0;
-}
-
-void ble_client_task(void *pvParameters)
-{
-    ESP_LOGI(TAG, "ble client task started");
-
-    // wait for ble stack to sync
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    while (1) {
-        // if not connected, try to scan/connect
-        if (remote_connection_handle == BLE_HS_CONN_HANDLE_NONE) {
-            ESP_LOGI(TAG, "scanning for remote node...");
-
-            // TODO: implement ble scanning and connection
-            // 1. scan for devices
-            // 2. filter by name/service uuid
-            // 3. connect to remote node
-            // 4. discover services
-            // 5. read motion characteristic
-
-            vTaskDelay(pdMS_TO_TICKS(5000));
-        } else {
-            // TODO: implement characteristic reading
-            // connected - periodically read motion characteristic from remote node
-
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-    }
 }
