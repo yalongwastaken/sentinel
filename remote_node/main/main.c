@@ -15,13 +15,16 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "hcsr501.h"
+#include "crash_limit.h"
 #include "remote_node_system_config.h"
 
 static const char *TAG = "REMOTE_NODE";
 
+static hcsr501_sensor_t hcsr501_sensor;
 static uint8_t motion_detected = 0;
 static uint16_t motion_characteristic_handle;
 
+static esp_err_t init_nvs_flash(void);
 static void start_advertising(void);
 static int handle_motion_characteristic_access(uint16_t conn_handle, uint16_t attr_handle,
                                                struct ble_gatt_access_ctxt *ctxt, void *arg);
@@ -45,38 +48,46 @@ static const struct ble_gatt_svc_def gatt_services[] = {
     },
     {0}};
 
+// every startup step aborts on failure, so the board reboots and retries until
+// crash_limit stops a build that keeps failing the same way
 void app_main(void)
 {
-    ESP_LOGI(TAG, "remote sensor node starting...");
-
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        err = nvs_flash_init();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize nvs");
+    ESP_ERROR_CHECK(init_nvs_flash());
+    crash_limit_verdict_t crash_verdict;
+    ESP_ERROR_CHECK(crash_limit_record_last_reset(&crash_verdict));
+    if (crash_verdict.limit_reached) {
+        ESP_LOGE(TAG, "stopped: this firmware crashed %d times by %s; flash a fix", CRASH_LIMIT_MAX_CRASHES_PER_TYPE,
+                 crash_verdict.crash_type);
         return;
     }
 
-    err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize nimble");
-        return;
-    }
+    ESP_ERROR_CHECK(hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN));
+
+    ESP_ERROR_CHECK(nimble_port_init());
     ble_hs_cfg.sync_cb = handle_ble_host_sync;
     ble_hs_cfg.reset_cb = handle_ble_host_reset;
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ble_gatts_count_cfg(gatt_services);
-    ble_gatts_add_svcs(gatt_services);
-    ble_svc_gap_device_name_set(BLE_DEVICE_NAME);
+    ESP_ERROR_CHECK(ble_gatts_count_cfg(gatt_services) == 0 ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(ble_gatts_add_svcs(gatt_services) == 0 ? ESP_OK : ESP_FAIL);
+    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(BLE_DEVICE_NAME) == 0 ? ESP_OK : ESP_FAIL);
     nimble_port_freertos_init(run_nimble_host_task);
 
-    xTaskCreate(motion_sample_task, "motion_sample_task", MOTION_SAMPLE_TASK_STACK_BYTES, NULL,
-                MOTION_SAMPLE_TASK_PRIORITY, NULL);
+    BaseType_t created = xTaskCreate(motion_sample_task, "motion_sample_task", MOTION_SAMPLE_TASK_STACK_BYTES, NULL,
+                                     MOTION_SAMPLE_TASK_PRIORITY, NULL);
+    ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 
-    ESP_LOGI(TAG, "initialization complete");
+    ESP_LOGI(TAG, "remote node running");
+}
+
+static esp_err_t init_nvs_flash(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    return err;
 }
 
 static void start_advertising(void)
@@ -143,9 +154,6 @@ static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason
 
 static void motion_sample_task(void *pvParameters)
 {
-    hcsr501_sensor_t hcsr501_sensor;
-    hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN);
-
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         // read pir sensor (simulated for now)

@@ -19,6 +19,7 @@
 #include "hcsr04.h"
 #include "dht11.h"
 #include "hd44780_pcf8574.h"
+#include "crash_limit.h"
 #include "main_hub_system_config.h"
 
 static const char *TAG = "MAIN_HUB";
@@ -42,6 +43,8 @@ static hd44780_t lcd;
 
 static uint16_t remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
 
+static esp_err_t init_nvs_flash(void);
+static void start_task_or_abort(TaskFunction_t task_function, const char *task_name, UBaseType_t priority);
 esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus);
 void local_motion_task(void *pvParameters);
 void distance_task(void *pvParameters);
@@ -53,39 +56,26 @@ static void run_nimble_host_task(void *param);
 static void handle_ble_host_sync(void);
 static void handle_ble_host_reset(int reason);
 
+// every startup step aborts on failure, so the board reboots and retries until
+// crash_limit stops a build that keeps failing the same way
 void app_main(void)
 {
-    ESP_LOGI(TAG, "main security hub starting...");
-
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        err = nvs_flash_init();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize nvs");
+    ESP_ERROR_CHECK(init_nvs_flash());
+    crash_limit_verdict_t crash_verdict;
+    ESP_ERROR_CHECK(crash_limit_record_last_reset(&crash_verdict));
+    if (crash_verdict.limit_reached) {
+        ESP_LOGE(TAG, "stopped: this firmware crashed %d times by %s; flash a fix", CRASH_LIMIT_MAX_CRASHES_PER_TYPE,
+                 crash_verdict.crash_type);
         return;
     }
 
     latest_readings.mutex = xSemaphoreCreateMutex();
-    if (latest_readings.mutex == NULL) {
-        ESP_LOGE(TAG, "failed to create mutex");
-        return;
-    }
+    ESP_ERROR_CHECK(latest_readings.mutex != NULL ? ESP_OK : ESP_ERR_NO_MEM);
 
     i2c_master_bus_handle_t i2c_bus;
-    err = create_i2c_master_bus(&i2c_bus);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize i2c");
-        return;
-    }
-
-    err = hd44780_init(&lcd, i2c_bus, PCF8574_I2C_ADDRESS, PCF8574_I2C_CLOCK_HZ, LCD1602_COLUMNS, LCD1602_ROWS);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize lcd");
-        return;
-    }
-
+    ESP_ERROR_CHECK(create_i2c_master_bus(&i2c_bus));
+    ESP_ERROR_CHECK(
+        hd44780_init(&lcd, i2c_bus, PCF8574_I2C_ADDRESS, PCF8574_I2C_CLOCK_HZ, LCD1602_COLUMNS, LCD1602_ROWS));
     hd44780_clear(&lcd);
     hd44780_set_cursor(&lcd, 0, 0);
     hd44780_print(&lcd, "Security System");
@@ -93,46 +83,40 @@ void app_main(void)
     hd44780_print(&lcd, "Initializing...");
     vTaskDelay(pdMS_TO_TICKS(STARTUP_MESSAGE_MS));
 
-    err = hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize pir sensor");
-        return;
-    }
+    ESP_ERROR_CHECK(hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN));
+    ESP_ERROR_CHECK(hcsr04_init(&hcsr04_sensor, HCSR04_TRIGGER_GPIO_PIN, HCSR04_ECHO_GPIO_PIN, HCSR04_ECHO_TIMEOUT_US));
+    ESP_ERROR_CHECK(dht11_init(&dht11_sensor, DHT11_GPIO_PIN));
 
-    err = hcsr04_init(&hcsr04_sensor, HCSR04_TRIGGER_GPIO_PIN, HCSR04_ECHO_GPIO_PIN, HCSR04_ECHO_TIMEOUT_US);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize ultrasonic sensor");
-        return;
-    }
-
-    err = dht11_init(&dht11_sensor, DHT11_GPIO_PIN);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize dht11 sensor");
-        return;
-    }
-
-    err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize nimble");
-        return;
-    }
+    ESP_ERROR_CHECK(nimble_port_init());
     ble_hs_cfg.sync_cb = handle_ble_host_sync;
     ble_hs_cfg.reset_cb = handle_ble_host_reset;
     ble_svc_gap_init();
     ble_svc_gatt_init();
     nimble_port_freertos_init(run_nimble_host_task);
 
-    ESP_LOGI(TAG, "all sensors and ble initialized");
+    start_task_or_abort(local_motion_task, "local_motion_task", LOCAL_MOTION_TASK_PRIORITY);
+    start_task_or_abort(distance_task, "distance_task", DISTANCE_TASK_PRIORITY);
+    start_task_or_abort(temperature_humidity_task, "temperature_humidity_task", TEMPERATURE_HUMIDITY_TASK_PRIORITY);
+    start_task_or_abort(ble_client_task, "ble_client_task", BLE_CLIENT_TASK_PRIORITY);
+    start_task_or_abort(display_refresh_task, "display_refresh_task", DISPLAY_REFRESH_TASK_PRIORITY);
 
-    xTaskCreate(local_motion_task, "local_motion_task", TASK_STACK_BYTES, NULL, LOCAL_MOTION_TASK_PRIORITY, NULL);
-    xTaskCreate(distance_task, "distance_task", TASK_STACK_BYTES, NULL, DISTANCE_TASK_PRIORITY, NULL);
-    xTaskCreate(temperature_humidity_task, "temperature_humidity_task", TASK_STACK_BYTES, NULL,
-                TEMPERATURE_HUMIDITY_TASK_PRIORITY, NULL);
-    xTaskCreate(ble_client_task, "ble_client_task", TASK_STACK_BYTES, NULL, BLE_CLIENT_TASK_PRIORITY, NULL);
-    xTaskCreate(display_refresh_task, "display_refresh_task", TASK_STACK_BYTES, NULL, DISPLAY_REFRESH_TASK_PRIORITY,
-                NULL);
+    ESP_LOGI(TAG, "main hub running");
+}
 
-    ESP_LOGI(TAG, "all tasks created - system running");
+static esp_err_t init_nvs_flash(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    return err;
+}
+
+static void start_task_or_abort(TaskFunction_t task_function, const char *task_name, UBaseType_t priority)
+{
+    BaseType_t created = xTaskCreate(task_function, task_name, TASK_STACK_BYTES, NULL, priority, NULL);
+    ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
 esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus)
@@ -145,14 +129,7 @@ esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus)
         .glitch_ignore_cnt = I2C_GLITCH_FILTER_CYCLES,
         .flags.enable_internal_pullup = true,
     };
-    esp_err_t err = i2c_new_master_bus(&bus_settings, bus);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to create i2c master bus");
-        return err;
-    }
-
-    ESP_LOGI(TAG, "i2c master initialized");
-    return ESP_OK;
+    return i2c_new_master_bus(&bus_settings, bus);
 }
 
 void local_motion_task(void *pvParameters)
