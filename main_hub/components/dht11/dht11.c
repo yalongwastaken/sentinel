@@ -172,8 +172,8 @@ static esp_err_t read_and_verify_frame(gpio_num_t gpio_pin, dht11_reading_t *rea
 
     esp_err_t err = dht11_decode_frame(frame, reading);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "checksum mismatch in frame %02X %02X %02X %02X %02X", frame[0], frame[1], frame[2], frame[3],
-                 frame[4]);
+        ESP_LOGW(TAG, "rejected frame %02X %02X %02X %02X %02X: %s", frame[0], frame[1], frame[2], frame[3], frame[4],
+                 esp_err_to_name(err));
         return err;
     }
 

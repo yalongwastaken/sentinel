@@ -33,6 +33,7 @@ esp_err_t dht11_init(dht11_sensor_t *sensor, gpio_num_t gpio_pin);
  *         ESP_ERR_INVALID_STATE if called sooner than DHT11_MIN_READ_INTERVAL_MS
  *         after the last successful read;
  *         ESP_ERR_TIMEOUT if the sensor stops answering mid-frame;
+ *         DHT11_ERR_ALL_ZERO_FRAME if the frame is all zeros;
  *         ESP_ERR_INVALID_CRC if the checksum does not match.
  *         reading is untouched on every failure.
  */

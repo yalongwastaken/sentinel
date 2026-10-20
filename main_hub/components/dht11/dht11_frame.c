@@ -13,8 +13,22 @@
 
 bool dht11_is_one_bit(int64_t high_pulse_us) { return high_pulse_us > DHT11_ONE_BIT_MIN_HIGH_US; }
 
+static bool is_all_zero_frame(const uint8_t frame[DHT11_FRAME_BYTES])
+{
+    for (int byte_index = 0; byte_index < DHT11_FRAME_BYTES; byte_index++) {
+        if (frame[byte_index] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 esp_err_t dht11_decode_frame(const uint8_t frame[DHT11_FRAME_BYTES], dht11_reading_t *reading)
 {
+    if (is_all_zero_frame(frame)) {
+        return DHT11_ERR_ALL_ZERO_FRAME;
+    }
+
     uint8_t computed_checksum = frame[0] + frame[1] + frame[2] + frame[3];
     if (computed_checksum != frame[DHT11_CHECKSUM_BYTE]) {
         return ESP_ERR_INVALID_CRC;

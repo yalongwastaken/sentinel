@@ -13,6 +13,9 @@
 #define DHT11_FRAME_BITS 40
 #define DHT11_FRAME_BYTES 5
 
+// an all-zero frame passes the checksum but is no real reading; callers decide what to do about it
+#define DHT11_ERR_ALL_ZERO_FRAME ESP_ERR_INVALID_RESPONSE
+
 typedef struct {
     float temperature_celsius;
     float relative_humidity_percent;
@@ -31,7 +34,9 @@ bool dht11_is_one_bit(int64_t high_pulse_us);
  * Bytes 0-1 are humidity (integer, decimal), bytes 2-3 temperature (integer,
  * decimal), byte 4 the checksum: the low 8 bits of the sum of bytes 0-3.
  *
- * @return ESP_OK with reading set, or ESP_ERR_INVALID_CRC leaving reading untouched
+ * @return ESP_OK with reading set; DHT11_ERR_ALL_ZERO_FRAME for an all-zero
+ *         frame; ESP_ERR_INVALID_CRC for a checksum mismatch. reading is
+ *         untouched on every failure.
  */
 esp_err_t dht11_decode_frame(const uint8_t frame[DHT11_FRAME_BYTES], dht11_reading_t *reading);
 
