@@ -16,12 +16,6 @@ static const char *TAG = "DHT11";
 #define DHT11_START_SIGNAL_HIGH_US 30
 #define DHT11_RESPONSE_TIMEOUT_US 100
 #define DHT11_BIT_TIMEOUT_US 200
-#define DHT11_ONE_BIT_MIN_HIGH_US 40
-#define DHT11_FRAME_BITS 40
-#define DHT11_FRAME_BYTES 5
-#define DHT11_HUMIDITY_INTEGER_BYTE 0
-#define DHT11_TEMPERATURE_INTEGER_BYTE 2
-#define DHT11_CHECKSUM_BYTE 4
 
 static esp_err_t wait_for_gpio_level(gpio_num_t gpio_pin, bool level, uint32_t timeout_us);
 
@@ -33,12 +27,7 @@ static esp_err_t wait_for_gpio_level(gpio_num_t gpio_pin, bool level, uint32_t t
 static int64_t measure_pulse_width_us(gpio_num_t gpio_pin, uint32_t level, uint32_t timeout_us);
 
 /**
- * @brief Read and verify the frame the DHT11 sends after its response signal.
- *
- * Bytes 0-1 are humidity (integer, decimal), bytes 2-3 temperature (integer,
- * decimal), byte 4 the checksum. A bit is '1' when its high pulse lasts longer
- * than DHT11_ONE_BIT_MIN_HIGH_US; the datasheet's pulses are about 26-28 us for
- * '0' and about 70 us for '1'.
+ * @brief Read the frame the DHT11 sends after its response signal, then decode it.
  */
 static esp_err_t read_and_verify_frame(gpio_num_t gpio_pin, dht11_reading_t *reading);
 
@@ -176,22 +165,19 @@ static esp_err_t read_and_verify_frame(gpio_num_t gpio_pin, dht11_reading_t *rea
             return ESP_ERR_TIMEOUT;
         }
 
-        if (high_pulse_us > DHT11_ONE_BIT_MIN_HIGH_US) {
+        if (dht11_is_one_bit(high_pulse_us)) {
             frame[byte_index] |= (1 << bit_position);
         }
     }
 
-    uint8_t computed_checksum = frame[0] + frame[1] + frame[2] + frame[3];
-    if (computed_checksum != frame[DHT11_CHECKSUM_BYTE]) {
-        ESP_LOGW(TAG, "checksum mismatch: computed 0x%02X, received 0x%02X", computed_checksum,
-                 frame[DHT11_CHECKSUM_BYTE]);
-        return ESP_ERR_INVALID_CRC;
+    esp_err_t err = dht11_decode_frame(frame, reading);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "checksum mismatch in frame %02X %02X %02X %02X %02X", frame[0], frame[1], frame[2], frame[3],
+                 frame[4]);
+        return err;
     }
 
-    reading->relative_humidity_percent = frame[DHT11_HUMIDITY_INTEGER_BYTE];
-    reading->temperature_celsius = frame[DHT11_TEMPERATURE_INTEGER_BYTE];
     ESP_LOGD(TAG, "temperature_celsius=%.0f relative_humidity_percent=%.0f", reading->temperature_celsius,
              reading->relative_humidity_percent);
-
     return ESP_OK;
 }

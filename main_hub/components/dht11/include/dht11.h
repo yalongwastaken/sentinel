@@ -9,14 +9,10 @@
 #include <stdint.h>
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "dht11_frame.h"
 
 // the datasheet's minimum time between two reads
 #define DHT11_MIN_READ_INTERVAL_MS 2000
-
-typedef struct {
-    float temperature_celsius;
-    float relative_humidity_percent;
-} dht11_reading_t;
 
 typedef struct {
     gpio_num_t gpio_pin;
