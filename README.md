@@ -1,106 +1,76 @@
 # Sentinel
 
-A multi-node wireless sensor network on ESP32. A main hub aggregates motion,
-distance, and environmental readings from its own sensors and from a
-battery-powered remote node over BLE, and surfaces them on a local display.
+A two-node wireless motion monitor on ESP32. A main hub reads its own motion,
+distance, temperature, and humidity sensors, links over BLE to a remote node
+that reports motion from a second spot, and shows everything on a local display.
 
-The goal is a real distributed embedded system rather than a single-board demo:
-two independent firmware images, sensor drivers written from datasheets,
-FreeRTOS task scheduling with mutex-protected shared state, and a BLE GATT link
-between nodes.
+> **Status: complete.**
 
-## Architecture
+## How It Works
 
-### Main Hub — ESP32 #1
+The **main hub** samples an HC-SR501 PIR motion sensor, an HC-SR04 ultrasonic
+distance sensor, and a DHT11 temperature and humidity sensor, each in its own
+FreeRTOS task, and refreshes an LCD1602 with the latest readings. It finds the
+remote node by its BLE service UUID, subscribes to its motion, and shows remote
+motion beside its own.
 
-Central monitoring node.
+The **remote node** samples its own HC-SR501 and notifies the hub whenever
+motion starts or stops.
 
-- **PIR motion sensor** — logs each change between motion and no motion
-- **HC-SR04 ultrasonic** — proximity detection, 2–400 cm
-- **DHT11** — temperature and humidity via bit-banged 1-Wire
-- **LCD1602 over I²C** — live sensor display
-- **BLE client** — receives readings from the remote node
-
-### Remote Node — ESP32 #2
-
-Battery-powered satellite sensor.
-
-- **PIR motion sensor** — remote motion detection
-- **BLE server** — transmits readings over NimBLE
+Both boards log each state change as a `key=value` line, retry a failed startup
+by rebooting, and stop a firmware build that keeps crashing the same way until a
+new build is flashed. [docs/architecture.md](docs/architecture.md) explains why
+each piece is built the way it is.
 
 ## Repository Structure
 
 ```
 sentinel/
-├── components/              # Drivers shared by both nodes
-│   └── hcsr501/             # HC-SR501 PIR motion sensor
-├── main_hub/                # Main hub firmware (ESP32 #1)
-│   ├── components/          # Hub-only drivers
-│   │   ├── dht11/           # Temperature/humidity sensor
-│   │   ├── hcsr04/          # Ultrasonic distance sensor
-│   │   └── hd44780_pcf8574/ # LCD1602 over a PCF8574 I2C backpack
-│   ├── main/
-│   │   ├── include/         # Node configuration
-│   │   └── main.c
-│   └── CMakeLists.txt
-├── remote_node/             # Remote node firmware (ESP32 #2)
-│   ├── main/
-│   │   ├── include/         # Node configuration
-│   │   └── main.c
-│   └── CMakeLists.txt
-├── docs/
-│   └── architecture.md
-└── README.md
+├── components/       # drivers and libraries both nodes build
+├── main_hub/
+│   ├── components/   # hub-only drivers
+│   ├── main/         # hub application, BLE client, pin configuration
+│   └── test_apps/    # on-target sensor tests
+├── remote_node/
+│   └── main/         # remote application, pin configuration
+├── host_test/        # host tests for the logic that needs no hardware
+└── docs/
 ```
 
-Each node builds as an independent ESP-IDF project. Drivers used by both nodes
-live in the root `components/`, pulled in through each project's
-`EXTRA_COMPONENT_DIRS`; drivers used by one node stay under that node.
-
-## Documentation
-
-- [docs/architecture.md](docs/architecture.md) — task model, scheduling,
-  concurrency, and bus details.
-
-## Requirements
-
-**Main hub** — ESP32-WROOM-32 · HC-SR501 PIR · HC-SR04 ultrasonic · DHT11 ·
-LCD1602 with PCF8574 I²C backpack · breadboard and jumpers · 5V/3.3V supply
-
-**Remote node** — ESP32-WROOM-32 · HC-SR501 PIR · USB or battery supply
-
-## Pin Configuration
-
-### Main Hub
-
-| Component       | Direction | GPIO |
-| --------------- | --------- | ---- |
-| PIR sensor      | IN        | 13   |
-| Ultrasonic TRIG | OUT       | 12   |
-| Ultrasonic ECHO | IN        | 14   |
-| DHT11 data      | I/O       | 15   |
-| I²C SDA         | I/O       | 21   |
-| I²C SCL         | I/O       | 22   |
-| Status LED      | OUT       | 2    |
-
-### Remote Node
-
-| Component  | Direction | GPIO |
-| ---------- | --------- | ---- |
-| PIR sensor | IN        | 13   |
+Each node builds as its own ESP-IDF project and reaches the shared `components/`
+through its `EXTRA_COMPONENT_DIRS`.
 
 ## Build and Flash
 
-```bash
-# Main hub
-cd main_hub
-idf.py build
-idf.py -p /dev/ttyUSB0 flash monitor
+### Requirements
 
-# Remote node
-cd remote_node
-idf.py build
-idf.py -p /dev/ttyUSB1 flash monitor
+- ESP-IDF v6.1, plus `libbsd-dev` on Linux for the host tests
+- **Main hub:** ESP32-WROOM-32, HC-SR501, HC-SR04, DHT11, LCD1602 with a PCF8574
+  I²C backpack
+- **Remote node:** ESP32-WROOM-32, HC-SR501, USB or battery supply
+
+Each node's pins are set in its configuration header:
+`main_hub/main/include/main_hub_system_config.h` and
+`remote_node/main/include/remote_node_system_config.h`.
+
+### Flash Both Nodes
+
+From the repository root, with ESP-IDF's environment loaded:
+
+```bash
+idf.py -C main_hub -p /dev/ttyUSB0 flash monitor
+idf.py -C remote_node -p /dev/ttyUSB1 flash monitor
+```
+
+### Run the Tests
+
+```bash
+# the hardware-free logic, on this machine
+(cd host_test && idf.py build && pytest --target linux)
+
+# the hub's sensors on their wiring: point the HC-SR04 at something within 4 m
+# and wave at the PIR when asked
+(cd main_hub/test_apps && idf.py build && pytest --target esp32 --port /dev/ttyUSB0)
 ```
 
 ## Author
@@ -109,3 +79,7 @@ idf.py -p /dev/ttyUSB1 flash monitor
 
 - Email: yalong.anthony123@gmail.com
 - GitHub: [@yalongwastaken](https://github.com/yalongwastaken)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
