@@ -37,7 +37,6 @@ static const char *TAG = "HD44780";
 #define PCF8574_REGISTER_SELECT_BIT 0x01
 #define PCF8574_ENABLE_BIT 0x04
 #define PCF8574_BACKLIGHT_ON_BIT 0x08
-#define PCF8574_BACKLIGHT_OFF 0x00
 #define PCF8574_ENABLE_PULSE_WAIT_MS 1
 #define PCF8574_I2C_TIMEOUT_MS 1000
 
@@ -56,9 +55,10 @@ static esp_err_t write_with_enable_pulse(hd44780_t *lcd, uint8_t backpack_bits)
     return enable_high_err != ESP_OK ? enable_high_err : enable_low_err;
 }
 
+// every byte to the backpack carries the backlight bit, or the backlight goes dark
 static esp_err_t write_nibble(hd44780_t *lcd, uint8_t nibble, uint8_t register_select)
 {
-    return write_with_enable_pulse(lcd, nibble | register_select | lcd->backlight_bit);
+    return write_with_enable_pulse(lcd, nibble | register_select | PCF8574_BACKLIGHT_ON_BIT);
 }
 
 static esp_err_t write_byte(hd44780_t *lcd, uint8_t byte, uint8_t register_select)
@@ -93,7 +93,6 @@ esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_
 
     lcd->columns = columns;
     lcd->rows = rows;
-    lcd->backlight_bit = PCF8574_BACKLIGHT_ON_BIT;
 
     // the HD44780 power-on reset sequence: three wake-ups, then switch to the 4-bit bus
     vTaskDelay(pdMS_TO_TICKS(HD44780_POWER_ON_WAIT_MS));
@@ -134,12 +133,6 @@ esp_err_t hd44780_set_cursor(hd44780_t *lcd, uint8_t column, uint8_t row)
     static const uint8_t ddram_row_start_addresses[] = {0x00, 0x40, 0x14, 0x54};
     uint8_t ddram_address = column + ddram_row_start_addresses[row];
     return send_command(lcd, HD44780_SET_DDRAM_ADDRESS | ddram_address);
-}
-
-esp_err_t hd44780_set_backlight(hd44780_t *lcd, bool on)
-{
-    lcd->backlight_bit = on ? PCF8574_BACKLIGHT_ON_BIT : PCF8574_BACKLIGHT_OFF;
-    return i2c_master_transmit(lcd->device, &lcd->backlight_bit, sizeof(lcd->backlight_bit), PCF8574_I2C_TIMEOUT_MS);
 }
 
 esp_err_t hd44780_print(hd44780_t *lcd, const char *text)

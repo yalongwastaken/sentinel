@@ -93,7 +93,7 @@ void app_main(void)
     hd44780_print(&lcd, "Initializing...");
     vTaskDelay(pdMS_TO_TICKS(STARTUP_MESSAGE_MS));
 
-    err = hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN, HCSR501_DEBOUNCE_MS);
+    err = hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize pir sensor");
         return;
@@ -159,11 +159,16 @@ void local_motion_task(void *pvParameters)
 {
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
-        bool local_motion = hcsr501_read_level_and_count_motion_events(&hcsr501_sensor);
+        bool local_motion = hcsr501_is_motion_detected(&hcsr501_sensor);
 
         xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        bool local_motion_changed = local_motion != latest_readings.local_motion_detected;
         latest_readings.local_motion_detected = local_motion;
         xSemaphoreGive(latest_readings.mutex);
+
+        if (local_motion_changed) {
+            ESP_LOGI(TAG, "motion=%s", local_motion ? "true" : "false");
+        }
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(LOCAL_MOTION_TASK_PERIOD_MS));
     }
@@ -173,9 +178,8 @@ void distance_task(void *pvParameters)
 {
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
-        if (hcsr04_measure_distance(&hcsr04_sensor) == ESP_OK) {
-            float distance_cm = hcsr04_get_last_distance_cm(&hcsr04_sensor);
-
+        float distance_cm;
+        if (hcsr04_measure_distance_cm(&hcsr04_sensor, &distance_cm) == ESP_OK) {
             xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
             latest_readings.distance_cm = distance_cm;
             xSemaphoreGive(latest_readings.mutex);
@@ -189,13 +193,11 @@ void temperature_humidity_task(void *pvParameters)
 {
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
-        if (dht11_read_temperature_and_humidity(&dht11_sensor) == ESP_OK) {
-            float temperature_celsius = dht11_get_last_temperature_celsius(&dht11_sensor);
-            float relative_humidity_percent = dht11_get_last_relative_humidity_percent(&dht11_sensor);
-
+        dht11_reading_t reading;
+        if (dht11_read_temperature_and_humidity(&dht11_sensor, &reading) == ESP_OK) {
             xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-            latest_readings.temperature_celsius = temperature_celsius;
-            latest_readings.relative_humidity_percent = relative_humidity_percent;
+            latest_readings.temperature_celsius = reading.temperature_celsius;
+            latest_readings.relative_humidity_percent = reading.relative_humidity_percent;
             xSemaphoreGive(latest_readings.mutex);
         }
 
