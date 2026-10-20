@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include "hd44780_pcf8574.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -96,19 +97,23 @@ esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_
 
     // the HD44780 power-on reset sequence: three wake-ups, then switch to the 4-bit bus
     vTaskDelay(pdMS_TO_TICKS(HD44780_POWER_ON_WAIT_MS));
-    write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0);
+    ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG,
+                        "no answer from the LCD at 0x%02X; check its wiring and I2C address", i2c_address);
     vTaskDelay(pdMS_TO_TICKS(HD44780_WAKE_UP_WAIT_MS));
-    write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0);
+    ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG, "lcd wake-up failed");
     vTaskDelay(pdMS_TO_TICKS(HD44780_WAKE_UP_WAIT_MS));
-    write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0);
+    ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG, "lcd wake-up failed");
     vTaskDelay(pdMS_TO_TICKS(HD44780_COMMAND_WAIT_MS));
-    write_nibble(lcd, HD44780_SELECT_4_BIT_NIBBLE, 0);
+    ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_SELECT_4_BIT_NIBBLE, 0), TAG, "lcd 4-bit select failed");
     vTaskDelay(pdMS_TO_TICKS(HD44780_COMMAND_WAIT_MS));
 
-    send_command(lcd, HD44780_FUNCTION_SET | HD44780_4_BIT_BUS | HD44780_2_LINES | HD44780_5X8_FONT);
-    send_command(lcd, HD44780_DISPLAY_CONTROL | HD44780_DISPLAY_ON);
-    hd44780_clear(lcd);
-    send_command(lcd, HD44780_ENTRY_MODE_SET | HD44780_ENTRY_INCREMENT);
+    ESP_RETURN_ON_ERROR(
+        send_command(lcd, HD44780_FUNCTION_SET | HD44780_4_BIT_BUS | HD44780_2_LINES | HD44780_5X8_FONT), TAG,
+        "lcd function set failed");
+    ESP_RETURN_ON_ERROR(send_command(lcd, HD44780_DISPLAY_CONTROL | HD44780_DISPLAY_ON), TAG, "lcd display on failed");
+    ESP_RETURN_ON_ERROR(hd44780_clear(lcd), TAG, "lcd clear failed");
+    ESP_RETURN_ON_ERROR(send_command(lcd, HD44780_ENTRY_MODE_SET | HD44780_ENTRY_INCREMENT), TAG,
+                        "lcd entry mode failed");
     vTaskDelay(pdMS_TO_TICKS(HD44780_INIT_SETTLE_WAIT_MS));
 
     ESP_LOGI(TAG, "initialized at 0x%02X (%dx%d)", i2c_address, columns, rows);

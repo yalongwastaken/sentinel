@@ -21,6 +21,8 @@ typedef struct {
  *        4-bit initialization sequence with the backlight on.
  *
  * @param i2c_address the backpack's address, typically 0x27 or 0x3F
+ * @return the first I2C error if any step fails, so a missing or miswired
+ *         display fails here instead of later
  */
 esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_address, uint32_t i2c_clock_hz,
                        uint8_t columns, uint8_t rows);
