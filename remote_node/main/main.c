@@ -144,13 +144,13 @@ static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason
 static void motion_sample_task(void *pvParameters)
 {
     hcsr501_sensor_t hcsr501_sensor;
-    hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN, HCSR501_DEBOUNCE_MS);
+    hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN);
 
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         // read pir sensor (simulated for now)
         motion_detected = (motion_detected == 0) ? 1 : 0;
-        ESP_LOGD(TAG, "motion status: %d", motion_detected);
+        ESP_LOGD(TAG, "motion=%s", motion_detected ? "true" : "false");
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(MOTION_SAMPLE_TASK_PERIOD_MS));
     }

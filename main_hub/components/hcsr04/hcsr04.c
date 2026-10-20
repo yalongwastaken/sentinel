@@ -47,14 +47,13 @@ esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trigger_gpio_pin, gpio
     gpio_set_level(trigger_gpio_pin, 0);
     sensor->trigger_gpio_pin = trigger_gpio_pin;
     sensor->echo_gpio_pin = echo_gpio_pin;
-    sensor->last_distance_cm = 0.0;
     sensor->echo_timeout_us = echo_timeout_us;
 
     ESP_LOGI(TAG, "initialized on trigger gpio %d, echo gpio %d", trigger_gpio_pin, echo_gpio_pin);
     return ESP_OK;
 }
 
-esp_err_t hcsr04_measure_distance(hcsr04_sensor_t *sensor)
+esp_err_t hcsr04_measure_distance_cm(const hcsr04_sensor_t *sensor, float *distance_cm)
 {
     gpio_set_level(sensor->trigger_gpio_pin, 0);
     esp_rom_delay_us(HCSR04_TRIGGER_SETTLE_LOW_US);
@@ -81,10 +80,8 @@ esp_err_t hcsr04_measure_distance(hcsr04_sensor_t *sensor)
 
     // the echo pulse lasts as long as the sound's round trip
     int64_t echo_round_trip_us = echo_fall_us - echo_rise_us;
-    sensor->last_distance_cm = (echo_round_trip_us * HCSR04_SPEED_OF_SOUND_CM_PER_US) / 2.0;
-    ESP_LOGD(TAG, "distance: %.2f cm (echo: %lld us)", sensor->last_distance_cm, echo_round_trip_us);
+    *distance_cm = (echo_round_trip_us * HCSR04_SPEED_OF_SOUND_CM_PER_US) / 2.0;
+    ESP_LOGD(TAG, "distance_cm=%.2f echo_round_trip_us=%lld", *distance_cm, echo_round_trip_us);
 
     return ESP_OK;
 }
-
-float hcsr04_get_last_distance_cm(const hcsr04_sensor_t *sensor) { return sensor->last_distance_cm; }

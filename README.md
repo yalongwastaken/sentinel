@@ -15,7 +15,7 @@ between nodes.
 
 Central monitoring node.
 
-- **PIR motion sensor** — edge detection with debouncing
+- **PIR motion sensor** — logs each change between motion and no motion
 - **HC-SR04 ultrasonic** — proximity detection, 2–400 cm
 - **DHT11** — temperature and humidity via bit-banged 1-Wire
 - **LCD1602 over I²C** — live sensor display
@@ -42,13 +42,11 @@ sentinel/
 │   ├── main/
 │   │   ├── include/         # Node configuration
 │   │   └── main.c
-│   ├── test/manual/         # Per-sensor manual tests
 │   └── CMakeLists.txt
 ├── remote_node/             # Remote node firmware (ESP32 #2)
 │   ├── main/
 │   │   ├── include/         # Node configuration
 │   │   └── main.c
-│   ├── test/manual/
 │   └── CMakeLists.txt
 ├── docs/
 │   └── architecture.md

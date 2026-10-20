@@ -80,4 +80,4 @@ wrapping a library. Placement follows use:
   `hd44780_pcf8574`.
 
 Drivers do not import other drivers; composition happens in the application
-layer. PIR debounce is 50 ms on both nodes.
+layer.

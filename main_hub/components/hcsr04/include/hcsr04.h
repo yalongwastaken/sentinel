@@ -13,7 +13,6 @@
 typedef struct {
     gpio_num_t trigger_gpio_pin;
     gpio_num_t echo_gpio_pin;
-    float last_distance_cm;
     uint32_t echo_timeout_us;
 } hcsr04_sensor_t;
 
@@ -26,16 +25,11 @@ esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trigger_gpio_pin, gpio
                       uint32_t echo_timeout_us);
 
 /**
- * @brief Send a trigger pulse, time the echo, and store the distance.
+ * @brief Send a trigger pulse, time the echo, and report the distance.
  *
- * @return ESP_OK on success, ESP_ERR_TIMEOUT if an echo edge never came;
- *         the last stored distance is kept on timeout
+ * @return ESP_OK with distance_cm set, or ESP_ERR_TIMEOUT if an echo edge never
+ *         came, leaving distance_cm untouched
  */
-esp_err_t hcsr04_measure_distance(hcsr04_sensor_t *sensor);
-
-/**
- * @brief Get the distance stored by the last successful measurement, 0 before the first.
- */
-float hcsr04_get_last_distance_cm(const hcsr04_sensor_t *sensor);
+esp_err_t hcsr04_measure_distance_cm(const hcsr04_sensor_t *sensor, float *distance_cm);
 
 #endif // HCSR04_H

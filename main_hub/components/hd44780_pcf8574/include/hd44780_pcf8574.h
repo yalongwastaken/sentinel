@@ -6,7 +6,6 @@
 #ifndef HD44780_PCF8574_H
 #define HD44780_PCF8574_H
 
-#include <stdbool.h>
 #include <stdint.h>
 #include "driver/i2c_master.h"
 #include "esp_err.h"
@@ -15,7 +14,6 @@ typedef struct {
     i2c_master_dev_handle_t device;
     uint8_t columns;
     uint8_t rows;
-    uint8_t backlight_bit;
 } hd44780_t;
 
 /**
@@ -35,8 +33,6 @@ esp_err_t hd44780_clear(hd44780_t *lcd);
  * @return ESP_ERR_INVALID_ARG if the position is off the display
  */
 esp_err_t hd44780_set_cursor(hd44780_t *lcd, uint8_t column, uint8_t row);
-
-esp_err_t hd44780_set_backlight(hd44780_t *lcd, bool on);
 
 esp_err_t hd44780_print(hd44780_t *lcd, const char *text);
 

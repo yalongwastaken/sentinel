@@ -40,7 +40,7 @@ static int64_t measure_pulse_width_us(gpio_num_t gpio_pin, uint32_t level, uint3
  * than DHT11_ONE_BIT_MIN_HIGH_US; the datasheet's pulses are about 26-28 us for
  * '0' and about 70 us for '1'.
  */
-static esp_err_t read_and_verify_frame(dht11_sensor_t *sensor);
+static esp_err_t read_and_verify_frame(gpio_num_t gpio_pin, dht11_reading_t *reading);
 
 esp_err_t dht11_init(dht11_sensor_t *sensor, gpio_num_t gpio_pin)
 {
@@ -63,15 +63,13 @@ esp_err_t dht11_init(dht11_sensor_t *sensor, gpio_num_t gpio_pin)
         return err;
     }
     sensor->gpio_pin = gpio_pin;
-    sensor->last_temperature_celsius = 0.0;
-    sensor->last_relative_humidity_percent = 0.0;
     sensor->last_successful_read_us = 0;
 
     ESP_LOGI(TAG, "initialized on gpio %d", gpio_pin);
     return ESP_OK;
 }
 
-esp_err_t dht11_read_temperature_and_humidity(dht11_sensor_t *sensor)
+esp_err_t dht11_read_temperature_and_humidity(dht11_sensor_t *sensor, dht11_reading_t *reading)
 {
     int64_t now_us = esp_timer_get_time();
     if ((now_us - sensor->last_successful_read_us) < (DHT11_MIN_READ_INTERVAL_MS * 1000)) {
@@ -117,7 +115,7 @@ esp_err_t dht11_read_temperature_and_humidity(dht11_sensor_t *sensor)
         return err;
     }
 
-    err = read_and_verify_frame(sensor);
+    err = read_and_verify_frame(sensor->gpio_pin, reading);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to read the frame");
         return err;
@@ -125,13 +123,6 @@ esp_err_t dht11_read_temperature_and_humidity(dht11_sensor_t *sensor)
 
     sensor->last_successful_read_us = esp_timer_get_time();
     return ESP_OK;
-}
-
-float dht11_get_last_temperature_celsius(const dht11_sensor_t *sensor) { return sensor->last_temperature_celsius; }
-
-float dht11_get_last_relative_humidity_percent(const dht11_sensor_t *sensor)
-{
-    return sensor->last_relative_humidity_percent;
 }
 
 static esp_err_t wait_for_gpio_level(gpio_num_t gpio_pin, bool level, uint32_t timeout_us)
@@ -163,23 +154,23 @@ static int64_t measure_pulse_width_us(gpio_num_t gpio_pin, uint32_t level, uint3
     return esp_timer_get_time() - pulse_start_us;
 }
 
-static esp_err_t read_and_verify_frame(dht11_sensor_t *sensor)
+static esp_err_t read_and_verify_frame(gpio_num_t gpio_pin, dht11_reading_t *reading)
 {
     uint8_t frame[DHT11_FRAME_BYTES] = {0};
     for (int bit_index = 0; bit_index < DHT11_FRAME_BITS; bit_index++) {
         int byte_index = bit_index / 8;
         int bit_position = 7 - (bit_index % 8);
 
-        if (wait_for_gpio_level(sensor->gpio_pin, 0, DHT11_BIT_TIMEOUT_US) != ESP_OK) {
+        if (wait_for_gpio_level(gpio_pin, 0, DHT11_BIT_TIMEOUT_US) != ESP_OK) {
             ESP_LOGW(TAG, "timeout waiting for bit %d to start", bit_index);
             return ESP_ERR_TIMEOUT;
         }
-        if (wait_for_gpio_level(sensor->gpio_pin, 1, DHT11_BIT_TIMEOUT_US) != ESP_OK) {
+        if (wait_for_gpio_level(gpio_pin, 1, DHT11_BIT_TIMEOUT_US) != ESP_OK) {
             ESP_LOGW(TAG, "timeout waiting for bit %d to go high", bit_index);
             return ESP_ERR_TIMEOUT;
         }
 
-        int64_t high_pulse_us = measure_pulse_width_us(sensor->gpio_pin, 1, DHT11_BIT_TIMEOUT_US);
+        int64_t high_pulse_us = measure_pulse_width_us(gpio_pin, 1, DHT11_BIT_TIMEOUT_US);
         if (high_pulse_us < 0) {
             ESP_LOGW(TAG, "timeout measuring bit %d", bit_index);
             return ESP_ERR_TIMEOUT;
@@ -197,10 +188,10 @@ static esp_err_t read_and_verify_frame(dht11_sensor_t *sensor)
         return ESP_ERR_INVALID_CRC;
     }
 
-    sensor->last_relative_humidity_percent = frame[DHT11_HUMIDITY_INTEGER_BYTE];
-    sensor->last_temperature_celsius = frame[DHT11_TEMPERATURE_INTEGER_BYTE];
-    ESP_LOGD(TAG, "temperature: %.1f C, humidity: %.1f %%", sensor->last_temperature_celsius,
-             sensor->last_relative_humidity_percent);
+    reading->relative_humidity_percent = frame[DHT11_HUMIDITY_INTEGER_BYTE];
+    reading->temperature_celsius = frame[DHT11_TEMPERATURE_INTEGER_BYTE];
+    ESP_LOGD(TAG, "temperature_celsius=%.0f relative_humidity_percent=%.0f", reading->temperature_celsius,
+             reading->relative_humidity_percent);
 
     return ESP_OK;
 }
