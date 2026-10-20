@@ -20,3 +20,6 @@ compile_commands.json
 
 # local working notes
 CLAUDE.md
+
+# pytest
+.pytest_cache/
