@@ -5,6 +5,7 @@
  */
 
 #include "hcsr04.h"
+#include "hcsr04_echo.h"
 #include "esp_rom_sys.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -13,7 +14,6 @@ static const char *TAG = "HCSR04";
 
 #define HCSR04_TRIGGER_SETTLE_LOW_US 2
 #define HCSR04_TRIGGER_PULSE_US 10
-#define HCSR04_SPEED_OF_SOUND_CM_PER_US 0.034
 
 esp_err_t hcsr04_init(hcsr04_sensor_t *sensor, gpio_num_t trigger_gpio_pin, gpio_num_t echo_gpio_pin,
                       uint32_t echo_timeout_us)
@@ -78,9 +78,8 @@ esp_err_t hcsr04_measure_distance_cm(const hcsr04_sensor_t *sensor, float *dista
     }
     int64_t echo_fall_us = esp_timer_get_time();
 
-    // the echo pulse lasts as long as the sound's round trip
     int64_t echo_round_trip_us = echo_fall_us - echo_rise_us;
-    *distance_cm = (echo_round_trip_us * HCSR04_SPEED_OF_SOUND_CM_PER_US) / 2.0;
+    *distance_cm = hcsr04_distance_cm_from_echo_us(echo_round_trip_us);
     ESP_LOGD(TAG, "distance_cm=%.2f echo_round_trip_us=%lld", *distance_cm, echo_round_trip_us);
 
     return ESP_OK;
