@@ -52,6 +52,6 @@ TEST_CASE("an all-zero frame is rejected even though its checksum matches", "[dh
     const uint8_t frame[DHT11_FRAME_BYTES] = {0, 0, 0, 0, 0};
     dht11_reading_t reading = {.temperature_celsius = UNTOUCHED_SENTINEL,
                                .relative_humidity_percent = UNTOUCHED_SENTINEL};
-    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_RESPONSE, dht11_decode_frame(frame, &reading));
+    TEST_ASSERT_EQUAL(DHT11_ERR_ALL_ZERO_FRAME, dht11_decode_frame(frame, &reading));
     TEST_ASSERT_EQUAL_FLOAT(UNTOUCHED_SENTINEL, reading.relative_humidity_percent);
 }
