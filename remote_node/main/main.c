@@ -4,6 +4,7 @@
  * @brief Remote node: samples its PIR sensor and notifies the hub over BLE whenever motion changes.
  */
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -27,7 +28,8 @@ static const ble_uuid128_t motion_characteristic_uuid =
     BLE_UUID128_INIT(REMOTE_MOTION_BLE_MOTION_CHARACTERISTIC_UUID_BYTES);
 
 static hcsr501_sensor_t hcsr501_sensor;
-static bool motion_detected = false;
+// the sensor task is the only writer; NimBLE reads this from its host task
+static atomic_bool motion_detected = false;
 static uint16_t motion_characteristic_handle;
 
 static esp_err_t init_nvs_flash(void);
@@ -138,7 +140,7 @@ static int handle_motion_characteristic_access(uint16_t conn_handle, uint16_t at
     if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) {
         return BLE_ATT_ERR_UNLIKELY;
     }
-    uint8_t payload = remote_motion_ble_encode_motion(motion_detected);
+    uint8_t payload = remote_motion_ble_encode_motion(atomic_load(&motion_detected));
     return os_mbuf_append(ctxt->om, &payload, REMOTE_MOTION_BLE_MOTION_PAYLOAD_BYTES) == 0
                ? 0
                : BLE_ATT_ERR_INSUFFICIENT_RES;
@@ -188,8 +190,8 @@ static void motion_sample_task(void *pvParameters)
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         bool motion = hcsr501_is_motion_detected(&hcsr501_sensor);
-        if (motion != motion_detected) {
-            motion_detected = motion;
+        if (motion != atomic_load(&motion_detected)) {
+            atomic_store(&motion_detected, motion);
             ESP_LOGI(TAG, "motion=%s", motion ? "true" : "false");
             // notifies every subscribed hub, reading the new value through the access callback
             ble_gatts_chr_updated(motion_characteristic_handle);
