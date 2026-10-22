@@ -4,6 +4,7 @@
  * @brief Per-build crash counting in NVS
  */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "crash_limit.h"
@@ -72,7 +73,9 @@ static esp_err_t count_last_reset_if_crash(nvs_handle_t nvs)
         }
         uint8_t crash_count;
         ESP_RETURN_ON_ERROR(read_crash_count(nvs, last_reset_reason, &crash_count), TAG, "failed to read crash count");
-        crash_count++;
+        if (crash_count < UINT8_MAX) {
+            crash_count++;
+        }
         ESP_LOGW(TAG, "crash_type=%s crash_count=%u", crash_types[i].name, crash_count);
 
         char key[NVS_KEY_NAME_MAX_SIZE];
