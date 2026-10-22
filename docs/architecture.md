@@ -1,83 +1,113 @@
 # Architecture
 
-Implementation detail for Sentinel. See the [README](../README.md) for what the
-system is and how to build it.
+Why Sentinel is built the way it is. Values live in the code, and each section
+names where.
 
-## Task model
+## Two Firmware Images, One Contract
 
-### Main Hub
+The hub and the remote node are separate ESP-IDF projects that must agree on how
+they talk. The BLE device name, the two 128-bit UUIDs, and the one-byte motion
+payload are defined once, in `components/remote_motion_ble/`, and both projects
+build from it, so the two sides cannot drift apart. The UUIDs are generated
+rather than 16-bit, because the 16-bit space belongs to services the Bluetooth
+SIG assigns.
 
-| Task              | Priority | Period   | Stack | Role                     |
-| ----------------- | -------- | -------- | ----- | ------------------------ |
-| `pir_task`        | 5        | 100 ms   | 4096  | Motion detection         |
-| `ultrasonic_task` | 4        | 200 ms   | 4096  | Distance measurement     |
-| `dht11_task`      | 3        | 3 s      | 4096  | Temperature and humidity |
-| `ble_client_task` | 3        | reactive | 4096  | Remote node link         |
-| `lcd_task`        | 2        | 1 s      | 4096  | Display refresh          |
+## Drivers Report, Applications Decide
 
-Priority follows how fast the signal changes: PIR edges are the most perishable,
-the display the least. `ble_client_task` is the exception — it is reactive
-rather than periodic, retrying its connection on a 1 s / 5 s backoff.
+Each driver configures its part and reports what it measures: the HC-SR501
+driver says whether its output is high, the HC-SR04 driver returns a distance,
+the DHT11 driver fills a reading. No driver caches a result or decides what an
+event is; the applications do. The one rule a driver keeps is its part's own:
+the DHT11 driver refuses a read sooner than its datasheet allows.
 
-### Remote Node
+Drivers never include other drivers; composition happens in each node's `main/`.
+The logic that needs no hardware, DHT11 frame decoding, HC-SR04 echo-to-distance
+conversion, and the BLE payload, sits in files with no GPIO dependency so
+`host_test/` can run it off the board.
 
-| Task          | Period | Role                         |
-| ------------- | ------ | ---------------------------- |
-| `sensor_task` | 5 s    | Sample PIR, publish over BLE |
+## Hub Tasks
 
-The 5 s period is a power decision, not a responsiveness one — the node is meant
-to run on battery.
+Each sensor has its own FreeRTOS task, and a display task refreshes the LCD.
+Priority follows how quickly a signal goes stale: motion first, then distance,
+then temperature and humidity, the display last. Periods and priorities are in
+`main_hub/main/include/main_hub_system_config.h`.
 
-## Scheduling
+Periodic tasks wake with `vTaskDelayUntil` against their previous wake, so time
+spent inside a loop does not accumulate as drift.
 
-Periodic tasks use `vTaskDelayUntil` against an `xTaskGetTickCount()` baseline,
-not `vTaskDelay`. The wake time is computed from the previous wake rather than
-from "now," so execution time inside the loop does not accumulate as period
-drift.
+## Shared State
 
-## Shared state and concurrency
+Every reading shared across hub tasks lives in `latest_readings` in
+`main_hub/main/main.c`, guarded by one mutex. Tasks copy under the lock and
+release it before any sensor or I²C I/O, so the critical section stays a handful
+of field copies and the motion task never waits behind a display update.
 
-All cross-task sensor state lives in a single `sensor_data` struct guarded by
-one FreeRTOS mutex. **The mutex protects that struct — it is not an I²C bus
-lock.**
+The mutex protects that struct, not the I²C bus. The LCD is the bus's only
+device, so the bus needs no lock of its own; a second I²C device would change
+that.
 
-Readers copy under the lock and release before doing slow work:
+## The BLE Link
 
-```c
-if (xSemaphoreTake(sensor_data.mutex, portMAX_DELAY) == pdTRUE) {
-    motion   = sensor_data.motion_detected;
-    distance = sensor_data.distance_cm;
-    /* ... */
-    xSemaphoreGive(sensor_data.mutex);
-}
-/* LCD I/O happens here, outside the critical section */
-```
+The remote node notifies on change rather than being polled, because motion
+changes rarely and the hub should hear about a change at once.
 
-This keeps the critical section bounded by a handful of field copies instead of
-by an I²C transaction, so the 100 ms PIR task is never blocked behind a display
-update.
+The hub's client, `main_hub/main/remote_link.c`, runs entirely on NimBLE's host
+task: it scans for the service UUID, connects, discovers the motion
+characteristic and its notification descriptor, subscribes, and reads the value
+once, because notifications arrive only on change. A failure on the remote's
+side drops the connection and scans again. It never restarts the hub, whose
+local sensors keep running, and the LCD shows `R:-` whenever the hub has no
+current value from the remote.
 
-The hub is currently the only I²C master and the LCD its only device, so no bus
-lock is needed. Adding a second I²C device would change that.
+A dropped link clears the remote reading at once, so the LCD never shows motion
+from a link being torn down. A scan or disconnect request NimBLE refuses is
+retried at the interval in `main_hub/main/include/main_hub_system_config.h`;
+without that, one refused scan would leave the hub never looking for the remote
+again.
 
-## Buses and protocols
+A motion notification that fails to send makes the remote drop the hub.
+Notifications carry only changes, so reconnecting is what makes the hub read the
+current value instead of waiting for the next change.
 
-| Interface          | Where                        | Notes                                  |
-| ------------------ | ---------------------------- | -------------------------------------- |
-| I²C @ 100 kHz      | LCD1602 via PCF8574 backpack | standard mode                          |
-| 1-Wire, bit-banged | DHT11                        | no peripheral support; software timing |
-| GPIO pulse timing  | HC-SR04                      | microsecond echo measurement           |
-| BLE GATT (NimBLE)  | hub ↔ remote node            | hub is client, node is server          |
+The remote samples its PIR on a longer period than the hub, set in
+`remote_node/main/include/remote_node_system_config.h`, to save power on a
+battery. The HC-SR501 holds its output high for a delay set on the module
+itself; set that delay to at least the sample period, or brief motion can fall
+between samples.
 
-## Component layout
+## Display
 
-Drivers are ESP-IDF components written against the datasheet rather than
-wrapping a library. Placement follows use:
+`refresh_display` in `main_hub/main/main.c` formats the LCD's two lines: local
+motion, remote motion, and distance on the first, temperature and humidity on
+the second.
 
-- `components/` at the repository root — drivers used by **both** nodes.
-  Currently `hcsr501`. Each project reaches it through `EXTRA_COMPONENT_DIRS`.
-- `main_hub/components/` — drivers used only by the hub: `dht11`, `hcsr04`,
-  `hd44780_pcf8574`.
+A reading the hub doesn't currently have shows as dashes, never as zero or an
+old value.
 
-Drivers do not import other drivers; composition happens in the application
-layer.
+When an LCD write fails, the display task re-initializes the LCD every refresh
+until a full redraw succeeds, so a display that was unplugged or glitched comes
+back without a reboot. It sees only failures the I²C bus reports: an LCD that
+resets while its backpack still acknowledges stays garbled until a reboot.
+
+## Failure Policy
+
+Every startup step goes through `ESP_ERROR_CHECK`, so a failed startup reboots
+and retries rather than leaving the board idle. `components/crash_limit/` counts
+each crash by its reset reason in NVS against the running image's SHA-256. Once
+one crash type reaches `CRASH_LIMIT_MAX_CRASHES_PER_TYPE` on a build, the board
+logs which and starts nothing until a different build is flashed. A brownout
+counts like any other crash: a build or a setup that keeps crashing should stop
+and say so.
+
+While running, the hub degrades rather than crashes on sensor and BLE failures.
+A bad DHT11 frame or a dropped link costs one reading or one connection, is
+logged, and the next attempt carries on.
+
+## Buses and Protocols
+
+| Interface                     | Where                          | Why                                                                     |
+| ----------------------------- | ------------------------------ | ----------------------------------------------------------------------- |
+| I²C                           | LCD1602 via a PCF8574 backpack | the backpack drives the display's parallel pins from two wires          |
+| DHT11 single-wire, bit-banged | DHT11                          | no ESP32 peripheral speaks it, so the driver times each bit in software |
+| GPIO pulse timing             | HC-SR04                        | the echo pulse's width is the measurement                               |
+| BLE GATT over NimBLE          | hub and remote node            | the hub is the client and subscribes; the remote is the server          |

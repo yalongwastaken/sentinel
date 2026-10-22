@@ -7,18 +7,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "driver/i2c_master.h"
 #include "nvs_flash.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
 #include "hcsr501.h"
 #include "hcsr04.h"
 #include "dht11.h"
 #include "hd44780_pcf8574.h"
+#include "crash_limit.h"
+#include "remote_link.h"
 #include "main_hub_system_config.h"
 
 static const char *TAG = "MAIN_HUB";
@@ -28,10 +26,12 @@ static const char *TAG = "MAIN_HUB";
 static struct {
     bool local_motion_detected;
     float distance_cm;
+    bool distance_valid;
     float temperature_celsius;
     float relative_humidity_percent;
+    bool temperature_humidity_valid;
     bool remote_motion_detected;
-    bool remote_connected;
+    bool remote_motion_valid;
     SemaphoreHandle_t mutex;
 } latest_readings;
 
@@ -40,99 +40,71 @@ static hcsr04_sensor_t hcsr04_sensor;
 static dht11_sensor_t dht11_sensor;
 static hd44780_t lcd;
 
-static uint16_t remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
-
+static esp_err_t init_nvs_flash(void);
+static void start_task_or_abort(TaskFunction_t task_function, const char *task_name, UBaseType_t priority);
 esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus);
 void local_motion_task(void *pvParameters);
 void distance_task(void *pvParameters);
 void temperature_humidity_task(void *pvParameters);
 void display_refresh_task(void *pvParameters);
-void ble_client_task(void *pvParameters);
-static int handle_gap_event(struct ble_gap_event *event, void *arg);
-static void run_nimble_host_task(void *param);
-static void handle_ble_host_sync(void);
-static void handle_ble_host_reset(int reason);
+static esp_err_t refresh_display(void);
+static void record_remote_link(bool remote_motion_valid, bool remote_motion_detected);
 
+// every startup step aborts on failure, so the board reboots and retries until
+// crash_limit stops a build that keeps failing the same way
 void app_main(void)
 {
-    ESP_LOGI(TAG, "main security hub starting...");
-
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        err = nvs_flash_init();
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize nvs");
+    ESP_ERROR_CHECK(init_nvs_flash());
+    crash_limit_verdict_t crash_verdict;
+    ESP_ERROR_CHECK(crash_limit_record_last_reset(&crash_verdict));
+    if (crash_verdict.limit_reached) {
+        ESP_LOGE(TAG, "stopped: this firmware crashed %d times by %s; flash a fix", CRASH_LIMIT_MAX_CRASHES_PER_TYPE,
+                 crash_verdict.crash_type);
         return;
     }
 
     latest_readings.mutex = xSemaphoreCreateMutex();
-    if (latest_readings.mutex == NULL) {
-        ESP_LOGE(TAG, "failed to create mutex");
-        return;
-    }
+    ESP_ERROR_CHECK(latest_readings.mutex != NULL ? ESP_OK : ESP_ERR_NO_MEM);
 
     i2c_master_bus_handle_t i2c_bus;
-    err = create_i2c_master_bus(&i2c_bus);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize i2c");
-        return;
-    }
-
-    err = hd44780_init(&lcd, i2c_bus, PCF8574_I2C_ADDRESS, PCF8574_I2C_CLOCK_HZ, LCD1602_COLUMNS, LCD1602_ROWS);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize lcd");
-        return;
-    }
-
-    hd44780_clear(&lcd);
-    hd44780_set_cursor(&lcd, 0, 0);
-    hd44780_print(&lcd, "Security System");
-    hd44780_set_cursor(&lcd, 0, 1);
-    hd44780_print(&lcd, "Initializing...");
+    ESP_ERROR_CHECK(create_i2c_master_bus(&i2c_bus));
+    ESP_ERROR_CHECK(
+        hd44780_init(&lcd, i2c_bus, PCF8574_I2C_ADDRESS, PCF8574_I2C_CLOCK_HZ, LCD1602_COLUMNS, LCD1602_ROWS));
+    ESP_ERROR_CHECK(hd44780_clear(&lcd));
+    ESP_ERROR_CHECK(hd44780_set_cursor(&lcd, 0, 0));
+    ESP_ERROR_CHECK(hd44780_print(&lcd, "Security System"));
+    ESP_ERROR_CHECK(hd44780_set_cursor(&lcd, 0, 1));
+    ESP_ERROR_CHECK(hd44780_print(&lcd, "Initializing..."));
     vTaskDelay(pdMS_TO_TICKS(STARTUP_MESSAGE_MS));
 
-    err = hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize pir sensor");
-        return;
+    ESP_ERROR_CHECK(hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN));
+    ESP_ERROR_CHECK(hcsr04_init(&hcsr04_sensor, HCSR04_TRIGGER_GPIO_PIN, HCSR04_ECHO_GPIO_PIN, HCSR04_ECHO_TIMEOUT_US));
+    ESP_ERROR_CHECK(dht11_init(&dht11_sensor, DHT11_GPIO_PIN));
+
+    ESP_ERROR_CHECK(remote_link_start(record_remote_link));
+
+    start_task_or_abort(local_motion_task, "local_motion_task", LOCAL_MOTION_TASK_PRIORITY);
+    start_task_or_abort(distance_task, "distance_task", DISTANCE_TASK_PRIORITY);
+    start_task_or_abort(temperature_humidity_task, "temperature_humidity_task", TEMPERATURE_HUMIDITY_TASK_PRIORITY);
+    start_task_or_abort(display_refresh_task, "display_refresh_task", DISPLAY_REFRESH_TASK_PRIORITY);
+
+    ESP_LOGI(TAG, "main hub running");
+}
+
+static esp_err_t init_nvs_flash(void)
+{
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
     }
+    return err;
+}
 
-    err = hcsr04_init(&hcsr04_sensor, HCSR04_TRIGGER_GPIO_PIN, HCSR04_ECHO_GPIO_PIN, HCSR04_ECHO_TIMEOUT_US);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize ultrasonic sensor");
-        return;
-    }
-
-    err = dht11_init(&dht11_sensor, DHT11_GPIO_PIN);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize dht11 sensor");
-        return;
-    }
-
-    err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to initialize nimble");
-        return;
-    }
-    ble_hs_cfg.sync_cb = handle_ble_host_sync;
-    ble_hs_cfg.reset_cb = handle_ble_host_reset;
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-    nimble_port_freertos_init(run_nimble_host_task);
-
-    ESP_LOGI(TAG, "all sensors and ble initialized");
-
-    xTaskCreate(local_motion_task, "local_motion_task", TASK_STACK_BYTES, NULL, LOCAL_MOTION_TASK_PRIORITY, NULL);
-    xTaskCreate(distance_task, "distance_task", TASK_STACK_BYTES, NULL, DISTANCE_TASK_PRIORITY, NULL);
-    xTaskCreate(temperature_humidity_task, "temperature_humidity_task", TASK_STACK_BYTES, NULL,
-                TEMPERATURE_HUMIDITY_TASK_PRIORITY, NULL);
-    xTaskCreate(ble_client_task, "ble_client_task", TASK_STACK_BYTES, NULL, BLE_CLIENT_TASK_PRIORITY, NULL);
-    xTaskCreate(display_refresh_task, "display_refresh_task", TASK_STACK_BYTES, NULL, DISPLAY_REFRESH_TASK_PRIORITY,
-                NULL);
-
-    ESP_LOGI(TAG, "all tasks created - system running");
+static void start_task_or_abort(TaskFunction_t task_function, const char *task_name, UBaseType_t priority)
+{
+    BaseType_t created = xTaskCreate(task_function, task_name, TASK_STACK_BYTES, NULL, priority, NULL);
+    ESP_ERROR_CHECK(created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
 }
 
 esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus)
@@ -145,14 +117,7 @@ esp_err_t create_i2c_master_bus(i2c_master_bus_handle_t *bus)
         .glitch_ignore_cnt = I2C_GLITCH_FILTER_CYCLES,
         .flags.enable_internal_pullup = true,
     };
-    esp_err_t err = i2c_new_master_bus(&bus_settings, bus);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "failed to create i2c master bus");
-        return err;
-    }
-
-    ESP_LOGI(TAG, "i2c master initialized");
-    return ESP_OK;
+    return i2c_new_master_bus(&bus_settings, bus);
 }
 
 void local_motion_task(void *pvParameters)
@@ -179,11 +144,13 @@ void distance_task(void *pvParameters)
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         float distance_cm;
-        if (hcsr04_measure_distance_cm(&hcsr04_sensor, &distance_cm) == ESP_OK) {
-            xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        bool distance_valid = hcsr04_measure_distance_cm(&hcsr04_sensor, &distance_cm) == ESP_OK;
+        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        latest_readings.distance_valid = distance_valid;
+        if (distance_valid) {
             latest_readings.distance_cm = distance_cm;
-            xSemaphoreGive(latest_readings.mutex);
         }
+        xSemaphoreGive(latest_readings.mutex);
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISTANCE_TASK_PERIOD_MS));
     }
@@ -194,12 +161,14 @@ void temperature_humidity_task(void *pvParameters)
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         dht11_reading_t reading;
-        if (dht11_read_temperature_and_humidity(&dht11_sensor, &reading) == ESP_OK) {
-            xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        bool temperature_humidity_valid = dht11_read_temperature_and_humidity(&dht11_sensor, &reading) == ESP_OK;
+        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        latest_readings.temperature_humidity_valid = temperature_humidity_valid;
+        if (temperature_humidity_valid) {
             latest_readings.temperature_celsius = reading.temperature_celsius;
             latest_readings.relative_humidity_percent = reading.relative_humidity_percent;
-            xSemaphoreGive(latest_readings.mutex);
         }
+        xSemaphoreGive(latest_readings.mutex);
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(TEMPERATURE_HUMIDITY_TASK_PERIOD_MS));
     }
@@ -208,93 +177,66 @@ void temperature_humidity_task(void *pvParameters)
 void display_refresh_task(void *pvParameters)
 {
     TickType_t last_wake_tick = xTaskGetTickCount();
+    bool display_reset_required = false;
     while (1) {
-        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-        bool local_motion = latest_readings.local_motion_detected;
-        bool remote_motion = latest_readings.remote_motion_detected;
-        float distance_cm = latest_readings.distance_cm;
-        float temperature_celsius = latest_readings.temperature_celsius;
-        float relative_humidity_percent = latest_readings.relative_humidity_percent;
-        xSemaphoreGive(latest_readings.mutex);
-
-        hd44780_clear(&lcd);
-        hd44780_set_cursor(&lcd, 0, 0);
-        hd44780_printf(&lcd, "M:%c D:%.0fcm", local_motion ? 'Y' : 'N', distance_cm);
-        hd44780_set_cursor(&lcd, 0, 1);
-        hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent);
+        esp_err_t display_error = display_reset_required ? hd44780_reset(&lcd) : ESP_OK;
+        if (display_error == ESP_OK) {
+            display_error = refresh_display();
+        }
+        if (display_error != ESP_OK) {
+            if (!display_reset_required) {
+                ESP_LOGW(TAG, "display_available=false error=%s", esp_err_to_name(display_error));
+            }
+            display_reset_required = true;
+            // a slow failed transaction must not trigger immediate catch-up retries
+            last_wake_tick = xTaskGetTickCount();
+        } else if (display_reset_required) {
+            ESP_LOGI(TAG, "display_available=true");
+            display_reset_required = false;
+        }
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISPLAY_REFRESH_TASK_PERIOD_MS));
     }
 }
 
-static void run_nimble_host_task(void *param)
+static esp_err_t refresh_display(void)
 {
-    nimble_port_run();
-    nimble_port_freertos_deinit();
+    xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+    bool local_motion = latest_readings.local_motion_detected;
+    bool remote_motion_valid = latest_readings.remote_motion_valid;
+    bool remote_motion = latest_readings.remote_motion_detected;
+    float distance_cm = latest_readings.distance_cm;
+    bool distance_valid = latest_readings.distance_valid;
+    float temperature_celsius = latest_readings.temperature_celsius;
+    float relative_humidity_percent = latest_readings.relative_humidity_percent;
+    bool temperature_humidity_valid = latest_readings.temperature_humidity_valid;
+    xSemaphoreGive(latest_readings.mutex);
+
+    char remote_motion_symbol = !remote_motion_valid ? '-' : (remote_motion ? 'Y' : 'N');
+    ESP_RETURN_ON_ERROR(hd44780_clear(&lcd), TAG, "display clear failed");
+    ESP_RETURN_ON_ERROR(hd44780_set_cursor(&lcd, 0, 0), TAG, "display first-row cursor failed");
+    ESP_RETURN_ON_ERROR(hd44780_printf(&lcd, "M:%c R:%c D:", local_motion ? 'Y' : 'N', remote_motion_symbol), TAG,
+                        "display motion write failed");
+    esp_err_t distance_write_error =
+        distance_valid ? hd44780_printf(&lcd, "%.0fcm", distance_cm) : hd44780_print(&lcd, "--cm");
+    ESP_RETURN_ON_ERROR(distance_write_error, TAG, "display distance write failed");
+    ESP_RETURN_ON_ERROR(hd44780_set_cursor(&lcd, 0, 1), TAG, "display second-row cursor failed");
+    return temperature_humidity_valid
+               ? hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent)
+               : hd44780_print(&lcd, "T:--C H:--%");
 }
 
-static void handle_ble_host_sync(void) { ESP_LOGI(TAG, "ble stack synced"); }
-
-static void handle_ble_host_reset(int reason) { ESP_LOGE(TAG, "ble reset, reason: %d", reason); }
-
-static int handle_gap_event(struct ble_gap_event *event, void *arg)
+// remote_link calls this, on NimBLE's host task, only when its view of the remote changes
+static void record_remote_link(bool remote_motion_valid, bool remote_motion_detected)
 {
-    switch (event->type) {
-    case BLE_GAP_EVENT_DISC:
-        if (event->disc.length_data > 0) {
-            ESP_LOGI(TAG, "device discovered");
-        }
-        break;
+    xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+    latest_readings.remote_motion_valid = remote_motion_valid;
+    latest_readings.remote_motion_detected = remote_motion_detected;
+    xSemaphoreGive(latest_readings.mutex);
 
-    case BLE_GAP_EVENT_CONNECT:
-        if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "connected to remote node");
-            remote_connection_handle = event->connect.conn_handle;
-
-            xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-            latest_readings.remote_connected = true;
-            xSemaphoreGive(latest_readings.mutex);
-        }
-        break;
-
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "disconnected from remote node");
-        remote_connection_handle = BLE_HS_CONN_HANDLE_NONE;
-
-        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-        latest_readings.remote_connected = false;
-        xSemaphoreGive(latest_readings.mutex);
-        break;
-    }
-
-    return 0;
-}
-
-void ble_client_task(void *pvParameters)
-{
-    ESP_LOGI(TAG, "ble client task started");
-
-    // wait for ble stack to sync
-    vTaskDelay(pdMS_TO_TICKS(1000));
-
-    while (1) {
-        // if not connected, try to scan/connect
-        if (remote_connection_handle == BLE_HS_CONN_HANDLE_NONE) {
-            ESP_LOGI(TAG, "scanning for remote node...");
-
-            // TODO: implement ble scanning and connection
-            // 1. scan for devices
-            // 2. filter by name/service uuid
-            // 3. connect to remote node
-            // 4. discover services
-            // 5. read motion characteristic
-
-            vTaskDelay(pdMS_TO_TICKS(5000));
-        } else {
-            // TODO: implement characteristic reading
-            // connected - periodically read motion characteristic from remote node
-
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
+    if (remote_motion_valid) {
+        ESP_LOGI(TAG, "remote_motion_valid=true remote_motion=%s", remote_motion_detected ? "true" : "false");
+    } else {
+        ESP_LOGI(TAG, "remote_motion_valid=false");
     }
 }

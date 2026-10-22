@@ -6,12 +6,12 @@
 
 #include "dht11_frame.h"
 
-#define DHT11_ONE_BIT_MIN_HIGH_US 40
+#define DHT11_ONE_BIT_HIGH_THRESHOLD_US 40
 #define DHT11_HUMIDITY_INTEGER_BYTE 0
 #define DHT11_TEMPERATURE_INTEGER_BYTE 2
 #define DHT11_CHECKSUM_BYTE 4
 
-bool dht11_is_one_bit(int64_t high_pulse_us) { return high_pulse_us > DHT11_ONE_BIT_MIN_HIGH_US; }
+bool dht11_is_one_bit(int64_t high_pulse_us) { return high_pulse_us > DHT11_ONE_BIT_HIGH_THRESHOLD_US; }
 
 static bool is_all_zero_frame(const uint8_t frame[DHT11_FRAME_BYTES])
 {
