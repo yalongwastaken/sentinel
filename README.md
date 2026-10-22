@@ -4,7 +4,7 @@ A two-node wireless motion monitor on ESP32. A main hub reads its own motion,
 distance, temperature, and humidity sensors, links over BLE to a remote node
 that reports motion from a second spot, and shows everything on a local display.
 
-> **Status: complete.**
+> **Status: shelved.**
 
 ## How It Works
 
