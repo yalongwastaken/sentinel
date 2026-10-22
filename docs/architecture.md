@@ -71,12 +71,17 @@ between samples.
 
 ## Display
 
-`display_refresh_task` in `main_hub/main/main.c` formats the LCD's two lines:
-local motion, remote motion, and distance on the first, temperature and humidity
-on the second.
+`refresh_display` in `main_hub/main/main.c` formats the LCD's two lines: local
+motion, remote motion, and distance on the first, temperature and humidity on
+the second.
 
 A reading the hub doesn't currently have shows as dashes, never as zero or an
 old value.
+
+When an LCD write fails, the display task re-initializes the LCD every refresh
+until a full redraw succeeds, so a display that was unplugged or glitched comes
+back without a reboot. It sees only failures the I²C bus reports: an LCD that
+resets while its backpack still acknowledges stays garbled until a reboot.
 
 ## Failure Policy
 

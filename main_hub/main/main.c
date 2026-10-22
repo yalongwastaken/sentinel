@@ -7,6 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "driver/i2c_master.h"
 #include "nvs_flash.h"
@@ -46,6 +47,7 @@ void local_motion_task(void *pvParameters);
 void distance_task(void *pvParameters);
 void temperature_humidity_task(void *pvParameters);
 void display_refresh_task(void *pvParameters);
+static esp_err_t refresh_display(void);
 static void record_remote_link(bool remote_motion_valid, bool remote_motion_detected);
 
 // every startup step aborts on failure, so the board reboots and retries until
@@ -175,36 +177,53 @@ void temperature_humidity_task(void *pvParameters)
 void display_refresh_task(void *pvParameters)
 {
     TickType_t last_wake_tick = xTaskGetTickCount();
+    bool display_reset_required = false;
     while (1) {
-        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-        bool local_motion = latest_readings.local_motion_detected;
-        bool remote_motion_valid = latest_readings.remote_motion_valid;
-        bool remote_motion = latest_readings.remote_motion_detected;
-        float distance_cm = latest_readings.distance_cm;
-        bool distance_valid = latest_readings.distance_valid;
-        float temperature_celsius = latest_readings.temperature_celsius;
-        float relative_humidity_percent = latest_readings.relative_humidity_percent;
-        bool temperature_humidity_valid = latest_readings.temperature_humidity_valid;
-        xSemaphoreGive(latest_readings.mutex);
-
-        char remote_motion_symbol = !remote_motion_valid ? '-' : (remote_motion ? 'Y' : 'N');
-        hd44780_clear(&lcd);
-        hd44780_set_cursor(&lcd, 0, 0);
-        hd44780_printf(&lcd, "M:%c R:%c D:", local_motion ? 'Y' : 'N', remote_motion_symbol);
-        if (distance_valid) {
-            hd44780_printf(&lcd, "%.0fcm", distance_cm);
-        } else {
-            hd44780_print(&lcd, "--cm");
+        esp_err_t display_error = display_reset_required ? hd44780_reset(&lcd) : ESP_OK;
+        if (display_error == ESP_OK) {
+            display_error = refresh_display();
         }
-        hd44780_set_cursor(&lcd, 0, 1);
-        if (temperature_humidity_valid) {
-            hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent);
-        } else {
-            hd44780_print(&lcd, "T:--C H:--%");
+        if (display_error != ESP_OK) {
+            if (!display_reset_required) {
+                ESP_LOGW(TAG, "display_available=false error=%s", esp_err_to_name(display_error));
+            }
+            display_reset_required = true;
+            // a slow failed transaction must not trigger immediate catch-up retries
+            last_wake_tick = xTaskGetTickCount();
+        } else if (display_reset_required) {
+            ESP_LOGI(TAG, "display_available=true");
+            display_reset_required = false;
         }
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISPLAY_REFRESH_TASK_PERIOD_MS));
     }
+}
+
+static esp_err_t refresh_display(void)
+{
+    xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+    bool local_motion = latest_readings.local_motion_detected;
+    bool remote_motion_valid = latest_readings.remote_motion_valid;
+    bool remote_motion = latest_readings.remote_motion_detected;
+    float distance_cm = latest_readings.distance_cm;
+    bool distance_valid = latest_readings.distance_valid;
+    float temperature_celsius = latest_readings.temperature_celsius;
+    float relative_humidity_percent = latest_readings.relative_humidity_percent;
+    bool temperature_humidity_valid = latest_readings.temperature_humidity_valid;
+    xSemaphoreGive(latest_readings.mutex);
+
+    char remote_motion_symbol = !remote_motion_valid ? '-' : (remote_motion ? 'Y' : 'N');
+    ESP_RETURN_ON_ERROR(hd44780_clear(&lcd), TAG, "display clear failed");
+    ESP_RETURN_ON_ERROR(hd44780_set_cursor(&lcd, 0, 0), TAG, "display first-row cursor failed");
+    ESP_RETURN_ON_ERROR(hd44780_printf(&lcd, "M:%c R:%c D:", local_motion ? 'Y' : 'N', remote_motion_symbol), TAG,
+                        "display motion write failed");
+    esp_err_t distance_write_error =
+        distance_valid ? hd44780_printf(&lcd, "%.0fcm", distance_cm) : hd44780_print(&lcd, "--cm");
+    ESP_RETURN_ON_ERROR(distance_write_error, TAG, "display distance write failed");
+    ESP_RETURN_ON_ERROR(hd44780_set_cursor(&lcd, 0, 1), TAG, "display second-row cursor failed");
+    return temperature_humidity_valid
+               ? hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent)
+               : hd44780_print(&lcd, "T:--C H:--%");
 }
 
 // remote_link calls this, on NimBLE's host task, only when its view of the remote changes

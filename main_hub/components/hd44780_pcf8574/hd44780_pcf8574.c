@@ -96,10 +96,26 @@ esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_
     lcd->columns = columns;
     lcd->rows = rows;
 
+    ESP_RETURN_ON_ERROR(hd44780_reset(lcd), TAG,
+                        "the LCD at 0x%02X failed to initialize; check its wiring and I2C address", i2c_address);
+
+    ESP_LOGI(TAG, "initialized at 0x%02X (%dx%d)", i2c_address, columns, rows);
+    return ESP_OK;
+}
+
+esp_err_t hd44780_reset(hd44780_t *lcd)
+{
+    // a failed write can leave enable high, so drive it low first; a missing LCD fails here without a log line, so a
+    // caller retrying an unplugged display stays quiet
+    uint8_t backpack_bits = PCF8574_BACKLIGHT_ON_BIT;
+    esp_err_t err = i2c_master_transmit(lcd->device, &backpack_bits, sizeof(backpack_bits), PCF8574_I2C_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        return err;
+    }
+
     // the HD44780 power-on reset sequence: three wake-ups, then switch to the 4-bit bus
     vTaskDelay(pdMS_TO_TICKS(HD44780_POWER_ON_WAIT_MS));
-    ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG,
-                        "no answer from the LCD at 0x%02X; check its wiring and I2C address", i2c_address);
+    ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG, "lcd wake-up failed");
     esp_rom_delay_us(HD44780_WAKE_UP_WAIT_US);
     ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG, "lcd wake-up failed");
     esp_rom_delay_us(HD44780_WAKE_UP_WAIT_US);
@@ -117,7 +133,6 @@ esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_
                         "lcd entry mode failed");
     vTaskDelay(pdMS_TO_TICKS(HD44780_INIT_SETTLE_WAIT_MS));
 
-    ESP_LOGI(TAG, "initialized at 0x%02X (%dx%d)", i2c_address, columns, rows);
     return ESP_OK;
 }
 

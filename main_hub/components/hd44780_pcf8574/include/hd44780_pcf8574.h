@@ -27,6 +27,16 @@ typedef struct {
 esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_address, uint32_t i2c_clock_hz,
                        uint8_t columns, uint8_t rows);
 
+/**
+ * @brief Restore 4-bit mode, clear the display, and enable the display and backlight.
+ *
+ * Reuses the device registered by hd44780_init; it does not add another I2C
+ * device. Call after a failed write before sending more commands or text.
+ * Returns the first I2C error, without logging when no LCD answers at all.
+ * Retry timing belongs to the caller.
+ */
+esp_err_t hd44780_reset(hd44780_t *lcd);
+
 esp_err_t hd44780_clear(hd44780_t *lcd);
 
 /**
