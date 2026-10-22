@@ -66,11 +66,11 @@ void app_main(void)
     ESP_ERROR_CHECK(create_i2c_master_bus(&i2c_bus));
     ESP_ERROR_CHECK(
         hd44780_init(&lcd, i2c_bus, PCF8574_I2C_ADDRESS, PCF8574_I2C_CLOCK_HZ, LCD1602_COLUMNS, LCD1602_ROWS));
-    hd44780_clear(&lcd);
-    hd44780_set_cursor(&lcd, 0, 0);
-    hd44780_print(&lcd, "Security System");
-    hd44780_set_cursor(&lcd, 0, 1);
-    hd44780_print(&lcd, "Initializing...");
+    ESP_ERROR_CHECK(hd44780_clear(&lcd));
+    ESP_ERROR_CHECK(hd44780_set_cursor(&lcd, 0, 0));
+    ESP_ERROR_CHECK(hd44780_print(&lcd, "Security System"));
+    ESP_ERROR_CHECK(hd44780_set_cursor(&lcd, 0, 1));
+    ESP_ERROR_CHECK(hd44780_print(&lcd, "Initializing..."));
     vTaskDelay(pdMS_TO_TICKS(STARTUP_MESSAGE_MS));
 
     ESP_ERROR_CHECK(hcsr501_init(&hcsr501_sensor, HCSR501_GPIO_PIN));
