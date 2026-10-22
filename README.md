@@ -46,7 +46,8 @@ through its `EXTRA_COMPONENT_DIRS`.
 
 - ESP-IDF v6.1, plus `libbsd-dev` on Linux for the host tests
 - **Main hub:** ESP32-WROOM-32, HC-SR501, HC-SR04, DHT11, LCD1602 with a PCF8574
-  I²C backpack
+  I²C backpack, and resistors for the
+  [HC-SR04 ECHO divider](main_hub/components/hcsr04/README.md#hardware)
 - **Remote node:** ESP32-WROOM-32, HC-SR501, USB or battery supply
 
 Each node's pins are set in its configuration header:
