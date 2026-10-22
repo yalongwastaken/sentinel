@@ -31,5 +31,6 @@ TEST_CASE("the LCD initializes, prints, and refuses an off-display cursor", "[hd
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, hd44780_set_cursor(&lcd, LCD1602_COLUMNS, 0));
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, hd44780_set_cursor(&lcd, 0, LCD1602_ROWS));
 
+    TEST_ASSERT_EQUAL(ESP_OK, i2c_master_bus_rm_device(lcd.device));
     TEST_ASSERT_EQUAL(ESP_OK, i2c_del_master_bus(bus));
 }
