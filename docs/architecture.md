@@ -75,6 +75,9 @@ between samples.
 local motion, remote motion, and distance on the first, temperature and humidity
 on the second.
 
+A reading the hub doesn't currently have shows as dashes, never as zero or an
+old value.
+
 ## Failure Policy
 
 Every startup step goes through `ESP_ERROR_CHECK`, so a failed startup reboots

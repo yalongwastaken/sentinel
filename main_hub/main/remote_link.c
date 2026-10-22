@@ -22,7 +22,7 @@ static const ble_uuid128_t motion_characteristic_uuid =
 
 // only NimBLE's host task touches these, through the callbacks below, so they need no lock
 static remote_link_state_callback_t on_remote_state;
-static bool reported_remote_connected;
+static bool reported_remote_motion_valid;
 static bool reported_remote_motion_detected;
 static uint8_t own_address_type;
 static struct remote_connection {
@@ -55,14 +55,15 @@ esp_err_t remote_link_start(remote_link_state_callback_t state_callback)
 }
 
 // tells the app only when its view of the remote actually changes
-static void report_remote_state(bool remote_connected, bool remote_motion_detected)
+static void report_remote_state(bool remote_motion_valid, bool remote_motion_detected)
 {
-    if (remote_connected == reported_remote_connected && remote_motion_detected == reported_remote_motion_detected) {
+    if (remote_motion_valid == reported_remote_motion_valid &&
+        remote_motion_detected == reported_remote_motion_detected) {
         return;
     }
-    reported_remote_connected = remote_connected;
+    reported_remote_motion_valid = remote_motion_valid;
     reported_remote_motion_detected = remote_motion_detected;
-    on_remote_state(remote_connected, remote_motion_detected);
+    on_remote_state(remote_motion_valid, remote_motion_detected);
 }
 
 static void run_nimble_host_task(void *param)

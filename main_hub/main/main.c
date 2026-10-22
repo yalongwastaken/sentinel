@@ -25,10 +25,12 @@ static const char *TAG = "MAIN_HUB";
 static struct {
     bool local_motion_detected;
     float distance_cm;
+    bool distance_valid;
     float temperature_celsius;
     float relative_humidity_percent;
+    bool temperature_humidity_valid;
     bool remote_motion_detected;
-    bool remote_connected;
+    bool remote_motion_valid;
     SemaphoreHandle_t mutex;
 } latest_readings;
 
@@ -44,7 +46,7 @@ void local_motion_task(void *pvParameters);
 void distance_task(void *pvParameters);
 void temperature_humidity_task(void *pvParameters);
 void display_refresh_task(void *pvParameters);
-static void record_remote_link(bool remote_connected, bool remote_motion_detected);
+static void record_remote_link(bool remote_motion_valid, bool remote_motion_detected);
 
 // every startup step aborts on failure, so the board reboots and retries until
 // crash_limit stops a build that keeps failing the same way
@@ -140,11 +142,13 @@ void distance_task(void *pvParameters)
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         float distance_cm;
-        if (hcsr04_measure_distance_cm(&hcsr04_sensor, &distance_cm) == ESP_OK) {
-            xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        bool distance_valid = hcsr04_measure_distance_cm(&hcsr04_sensor, &distance_cm) == ESP_OK;
+        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        latest_readings.distance_valid = distance_valid;
+        if (distance_valid) {
             latest_readings.distance_cm = distance_cm;
-            xSemaphoreGive(latest_readings.mutex);
         }
+        xSemaphoreGive(latest_readings.mutex);
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISTANCE_TASK_PERIOD_MS));
     }
@@ -155,12 +159,14 @@ void temperature_humidity_task(void *pvParameters)
     TickType_t last_wake_tick = xTaskGetTickCount();
     while (1) {
         dht11_reading_t reading;
-        if (dht11_read_temperature_and_humidity(&dht11_sensor, &reading) == ESP_OK) {
-            xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        bool temperature_humidity_valid = dht11_read_temperature_and_humidity(&dht11_sensor, &reading) == ESP_OK;
+        xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
+        latest_readings.temperature_humidity_valid = temperature_humidity_valid;
+        if (temperature_humidity_valid) {
             latest_readings.temperature_celsius = reading.temperature_celsius;
             latest_readings.relative_humidity_percent = reading.relative_humidity_percent;
-            xSemaphoreGive(latest_readings.mutex);
         }
+        xSemaphoreGive(latest_readings.mutex);
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(TEMPERATURE_HUMIDITY_TASK_PERIOD_MS));
     }
@@ -172,35 +178,46 @@ void display_refresh_task(void *pvParameters)
     while (1) {
         xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
         bool local_motion = latest_readings.local_motion_detected;
-        bool remote_connected = latest_readings.remote_connected;
+        bool remote_motion_valid = latest_readings.remote_motion_valid;
         bool remote_motion = latest_readings.remote_motion_detected;
         float distance_cm = latest_readings.distance_cm;
+        bool distance_valid = latest_readings.distance_valid;
         float temperature_celsius = latest_readings.temperature_celsius;
         float relative_humidity_percent = latest_readings.relative_humidity_percent;
+        bool temperature_humidity_valid = latest_readings.temperature_humidity_valid;
         xSemaphoreGive(latest_readings.mutex);
 
-        char remote_motion_symbol = !remote_connected ? '-' : (remote_motion ? 'Y' : 'N');
+        char remote_motion_symbol = !remote_motion_valid ? '-' : (remote_motion ? 'Y' : 'N');
         hd44780_clear(&lcd);
         hd44780_set_cursor(&lcd, 0, 0);
-        hd44780_printf(&lcd, "M:%c R:%c D:%.0fcm", local_motion ? 'Y' : 'N', remote_motion_symbol, distance_cm);
+        hd44780_printf(&lcd, "M:%c R:%c D:", local_motion ? 'Y' : 'N', remote_motion_symbol);
+        if (distance_valid) {
+            hd44780_printf(&lcd, "%.0fcm", distance_cm);
+        } else {
+            hd44780_print(&lcd, "--cm");
+        }
         hd44780_set_cursor(&lcd, 0, 1);
-        hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent);
+        if (temperature_humidity_valid) {
+            hd44780_printf(&lcd, "T:%.0fC H:%.0f%%", temperature_celsius, relative_humidity_percent);
+        } else {
+            hd44780_print(&lcd, "T:--C H:--%");
+        }
 
         vTaskDelayUntil(&last_wake_tick, pdMS_TO_TICKS(DISPLAY_REFRESH_TASK_PERIOD_MS));
     }
 }
 
 // remote_link calls this, on NimBLE's host task, only when its view of the remote changes
-static void record_remote_link(bool remote_connected, bool remote_motion_detected)
+static void record_remote_link(bool remote_motion_valid, bool remote_motion_detected)
 {
     xSemaphoreTake(latest_readings.mutex, portMAX_DELAY);
-    latest_readings.remote_connected = remote_connected;
+    latest_readings.remote_motion_valid = remote_motion_valid;
     latest_readings.remote_motion_detected = remote_motion_detected;
     xSemaphoreGive(latest_readings.mutex);
 
-    if (remote_connected) {
-        ESP_LOGI(TAG, "remote_connected=true remote_motion=%s", remote_motion_detected ? "true" : "false");
+    if (remote_motion_valid) {
+        ESP_LOGI(TAG, "remote_motion_valid=true remote_motion=%s", remote_motion_detected ? "true" : "false");
     } else {
-        ESP_LOGI(TAG, "remote_connected=false");
+        ESP_LOGI(TAG, "remote_motion_valid=false");
     }
 }
