@@ -9,6 +9,7 @@
 #include "hd44780_pcf8574.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -29,16 +30,16 @@ static const char *TAG = "HD44780";
 #define HD44780_WAKE_UP_NIBBLE 0x30
 #define HD44780_SELECT_4_BIT_NIBBLE 0x20
 #define HD44780_POWER_ON_WAIT_MS 50
-#define HD44780_WAKE_UP_WAIT_MS 5
-#define HD44780_COMMAND_WAIT_MS 1
-#define HD44780_CLEAR_DISPLAY_WAIT_MS 2
+#define HD44780_WAKE_UP_WAIT_US 5000
+#define HD44780_COMMAND_WAIT_US 1000
+#define HD44780_CLEAR_DISPLAY_WAIT_US 2000
 #define HD44780_INIT_SETTLE_WAIT_MS 10
 #define HD44780_PRINTF_BUFFER_BYTES 64
 
 #define PCF8574_REGISTER_SELECT_BIT 0x01
 #define PCF8574_ENABLE_BIT 0x04
 #define PCF8574_BACKLIGHT_ON_BIT 0x08
-#define PCF8574_ENABLE_PULSE_WAIT_MS 1
+#define PCF8574_ENABLE_PULSE_WAIT_US 50
 #define PCF8574_I2C_TIMEOUT_MS 1000
 
 #define HIGH_NIBBLE_MASK 0xF0
@@ -47,11 +48,11 @@ static esp_err_t write_with_enable_pulse(hd44780_t *lcd, uint8_t backpack_bits)
 {
     uint8_t byte = backpack_bits | PCF8574_ENABLE_BIT;
     esp_err_t enable_high_err = i2c_master_transmit(lcd->device, &byte, sizeof(byte), PCF8574_I2C_TIMEOUT_MS);
-    vTaskDelay(pdMS_TO_TICKS(PCF8574_ENABLE_PULSE_WAIT_MS));
+    esp_rom_delay_us(PCF8574_ENABLE_PULSE_WAIT_US);
 
     byte = backpack_bits & ~PCF8574_ENABLE_BIT;
     esp_err_t enable_low_err = i2c_master_transmit(lcd->device, &byte, sizeof(byte), PCF8574_I2C_TIMEOUT_MS);
-    vTaskDelay(pdMS_TO_TICKS(PCF8574_ENABLE_PULSE_WAIT_MS));
+    esp_rom_delay_us(PCF8574_ENABLE_PULSE_WAIT_US);
 
     return enable_high_err != ESP_OK ? enable_high_err : enable_low_err;
 }
@@ -99,13 +100,13 @@ esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_
     vTaskDelay(pdMS_TO_TICKS(HD44780_POWER_ON_WAIT_MS));
     ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG,
                         "no answer from the LCD at 0x%02X; check its wiring and I2C address", i2c_address);
-    vTaskDelay(pdMS_TO_TICKS(HD44780_WAKE_UP_WAIT_MS));
+    esp_rom_delay_us(HD44780_WAKE_UP_WAIT_US);
     ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG, "lcd wake-up failed");
-    vTaskDelay(pdMS_TO_TICKS(HD44780_WAKE_UP_WAIT_MS));
+    esp_rom_delay_us(HD44780_WAKE_UP_WAIT_US);
     ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_WAKE_UP_NIBBLE, 0), TAG, "lcd wake-up failed");
-    vTaskDelay(pdMS_TO_TICKS(HD44780_COMMAND_WAIT_MS));
+    esp_rom_delay_us(HD44780_COMMAND_WAIT_US);
     ESP_RETURN_ON_ERROR(write_nibble(lcd, HD44780_SELECT_4_BIT_NIBBLE, 0), TAG, "lcd 4-bit select failed");
-    vTaskDelay(pdMS_TO_TICKS(HD44780_COMMAND_WAIT_MS));
+    esp_rom_delay_us(HD44780_COMMAND_WAIT_US);
 
     ESP_RETURN_ON_ERROR(
         send_command(lcd, HD44780_FUNCTION_SET | HD44780_4_BIT_BUS | HD44780_2_LINES | HD44780_5X8_FONT), TAG,
@@ -123,7 +124,7 @@ esp_err_t hd44780_init(hd44780_t *lcd, i2c_master_bus_handle_t bus, uint8_t i2c_
 esp_err_t hd44780_clear(hd44780_t *lcd)
 {
     esp_err_t err = send_command(lcd, HD44780_CLEAR_DISPLAY);
-    vTaskDelay(pdMS_TO_TICKS(HD44780_CLEAR_DISPLAY_WAIT_MS));
+    esp_rom_delay_us(HD44780_CLEAR_DISPLAY_WAIT_US);
     return err;
 }
 
