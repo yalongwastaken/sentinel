@@ -23,8 +23,9 @@ typedef void (*remote_link_state_callback_t)(bool remote_motion_valid, bool remo
 /**
  * @brief Start NimBLE and keep scanning for, connecting to, and subscribing to the remote node.
  *
- * A failure on the remote's side drops the connection and scans again; only
- * starting NimBLE itself can fail here.
+ * An unusable link immediately reports unavailable, then disconnects and scans
+ * again. Failed scan and disconnect requests retry on NimBLE's host task.
+ * Returns an error if NimBLE or the retry timer cannot start.
  */
 esp_err_t remote_link_start(remote_link_state_callback_t on_remote_state);
 

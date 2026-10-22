@@ -59,6 +59,12 @@ side drops the connection and scans again. It never restarts the hub, whose
 local sensors keep running, and the LCD shows `R:-` whenever the hub has no
 current value from the remote.
 
+A dropped link clears the remote reading at once, so the LCD never shows motion
+from a link being torn down. A scan or disconnect request NimBLE refuses is
+retried at the interval in `main_hub/main/include/main_hub_system_config.h`;
+without that, one refused scan would leave the hub never looking for the remote
+again.
+
 A motion notification that fails to send makes the remote drop the hub.
 Notifications carry only changes, so reconnecting is what makes the hub read the
 current value instead of waiting for the next change.
