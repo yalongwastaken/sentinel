@@ -168,6 +168,20 @@ static int handle_gap_event(struct ble_gap_event *event, void *arg)
         }
         break;
 
+    case BLE_GAP_EVENT_NOTIFY_TX: {
+        if (event->notify_tx.attr_handle != motion_characteristic_handle || event->notify_tx.indication ||
+            event->notify_tx.status == 0) {
+            break;
+        }
+        ESP_LOGW(TAG, "motion notification failed: nimble_rc=%d; disconnecting so the hub reads again",
+                 event->notify_tx.status);
+        int disconnect_status = ble_gap_terminate(event->notify_tx.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        if (disconnect_status != BLE_HS_ENOTCONN && disconnect_status != BLE_HS_EALREADY) {
+            abort_on_nimble_error(disconnect_status, "disconnecting after a failed motion notification");
+        }
+        break;
+    }
+
     case BLE_GAP_EVENT_ADV_COMPLETE:
         start_advertising();
         break;

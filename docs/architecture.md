@@ -59,6 +59,10 @@ side drops the connection and scans again. It never restarts the hub, whose
 local sensors keep running, and the LCD shows `R:-` whenever the hub has no
 current value from the remote.
 
+A motion notification that fails to send makes the remote drop the hub.
+Notifications carry only changes, so reconnecting is what makes the hub read the
+current value instead of waiting for the next change.
+
 The remote samples its PIR on a longer period than the hub, set in
 `remote_node/main/include/remote_node_system_config.h`, to save power on a
 battery. The HC-SR501 holds its output high for a delay set on the module
